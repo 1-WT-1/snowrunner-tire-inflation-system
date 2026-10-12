@@ -3,8 +3,8 @@
 // under each wheel, shrinks the wheel's collision cylinder (the game's own soft tire rendering then draws the
 // flattening), scales fuel use and steering speed, and soft tires driven too fast take damage.
 //
-// Where the values live (found on the running game 2026-10-02; the RVAs are the Steam build's, kBuilds has each
-// build's own):
+// Where the values live (found on the running game 2026-10-02; the RVAs are the Steam build's, build_find.h finds
+// each build's own):
 //   truck control global at RVA 0x2a8eb78; the driven vehicle at control+8
 //   vehicle+0x200 / +0x208 -> begin / end of its array of wheel model pointers; wheel model+0x2C8 -> wheel object
 //   wheel object (vtable RVA 0x2258918): +0x18 Havok body, +0x94 radius, +0xA0 SubstanceFriction, +0xA4 BodyFrictionAsphalt
@@ -81,7 +81,8 @@ static long long g_watchA = -1, g_watchB = -1, g_watchC = -1;
 
 // cylinder: the collision cylinder's stock radius; writtenCylinder: the radius written last; room: how many metres the
 // game can draw this tire flatter than it comes (FlattenLimit less the tire's own offset); radius: the tire's radius.
-struct Stock { float body, asphalt, substance, cylinder; Mode written; float writtenCylinder, room, radius; };
+// worn: its grip was taken away as worn out (ApplyWornWheel), until a repair.
+struct Stock { float body, asphalt, substance, cylinder; Mode written; float writtenCylinder, room, radius; bool worn = false; };
 static std::unordered_map<uint64_t, Stock> g_wheels; // wheel object -> its stock values and the factors written to it
 static float g_deepest = 0.0f; // the largest AdditionalRadiusOffset among the modes
 static bool g_rollingRadius = true; // ini RollingRadius (RollFactor)
@@ -567,6 +568,40 @@ static float RollFactor(const Stock &s)
     return rolling(s.writtenCylinder) / rolling(s.cylinder) * s.cylinder / s.writtenCylinder;
 }
 
+// A worn out tire has no grip. The game's break (the wheel model's broken flag, +0x328, set when a wheel's damage
+// reaches its capacity) shrinks the wheel to its broken radius and leaves its grip values as they were: here the
+// paved and mud grip go to 0, and ApplyVehicle writes 0 into the ground grip list for the wheel. The cylinder is
+// left as the break made it. A wheel not seen before (a save loaded with a flat tire, a truck changed to) gives its
+// values as stock, with the tire's own radius from +0x98 (+0x94 holds the broken one). A repair gives the grip
+// back: the game builds the shape anew at the stock size and leaves the written frictions on it, and ApplyWheel
+// then writes the mode's.
+static bool ApplyWornWheel(const WheelRef &w)
+{
+    float asphalt, substance, cylinder, radius, offset;
+    if (!Read(w.wheel + 0xA4, asphalt) || !Read(w.wheel + 0xA0, substance) || !Read(w.shape + 0x28, cylinder) || !Read(w.wheel + 0x98, radius) || !Read(w.wheel + 0xB4, offset)) return false;
+    auto it = g_wheels.find(w.wheel);
+    if (it != g_wheels.end())
+    {
+        // not the values written last: another wheel the game built at this address
+        const Stock &s = it->second;
+        if (!Near(asphalt, s.asphalt * s.written.asphalt) || !Near(substance, s.substance * s.written.substance)) it = g_wheels.end();
+    }
+    if (it == g_wheels.end())
+    {
+        if (!(radius > 0.05f && radius < 5.0f) || !(offset >= 0.0f && offset <= radius * 0.3f) || !(asphalt > 0.0f && asphalt <= 10.5f) || !(substance >= 0.0f && substance <= 10.5f)) return false;
+        it = g_wheels.insert_or_assign(w.wheel, Stock{ 0.0f, asphalt, substance, radius - offset, kStockMode, cylinder, max(0.0f, FlattenLimit(radius) - offset), radius }).first;
+    }
+    Stock &s = it->second;
+    if (s.worn) return false;
+    if (!StillThere(w) || !Write(w.wheel + 0xA4, 0.0f)) return false;
+    s.written.asphalt = 0.0f;
+    if (!Write(w.wheel + 0xA0, 0.0f)) return false;
+    s.written.substance = 0.0f;
+    s.worn = true;
+    Log(L"wheel %p worn out: no grip until it is repaired (its own asphalt %.3f, mud %.3f)", (void *)w.wheel, s.asphalt, s.substance);
+    return true;
+}
+
 // Brings one wheel to the factors m. A wheel not seen before, or one whose values are not the ones written last (the
 // game rebuilt it at the same address), gives its current values as stock first.
 static bool ApplyWheel(const WheelRef &w, const Mode &m, bool logWrite, bool announce)
@@ -576,8 +611,10 @@ static bool ApplyWheel(const WheelRef &w, const Mode &m, bool logWrite, bool ann
     // stock and scaled them again, over and over (2026-10-02: frictions in the thousands, flat tires, a rolled truck).
     float asphalt, substance, cylinder, radius, offset;
     BYTE broken = 0;
-    // a broken tire (the wheel model's flag, +0x328) is left as it is until the game repairs it, as Expeditions leaves it
-    if (Read(w.model + 0x328, broken) && broken) return false;
+    // a worn out tire (the wheel model's broken flag, +0x328) keeps the shape the game's break gave it until the game
+    // repairs it, as Expeditions leaves it, and loses its grip
+    if (!Read(w.model + 0x328, broken)) return false;
+    if (broken) return ApplyWornWheel(w);
     if (!Read(w.wheel + 0xA4, asphalt) || !Read(w.wheel + 0xA0, substance) || !Read(w.shape + 0x28, cylinder) || !Read(w.wheel + 0x94, radius) || !Read(w.wheel + 0xB4, offset)) return false;
     // the stock cylinder is known without a capture: the wheel object keeps the radius and offset it was built from
     const float stockCylinder = radius - offset;
@@ -634,6 +671,7 @@ static bool ApplyWheel(const WheelRef &w, const Mode &m, bool logWrite, bool ann
         s.written.substance = m.substance;
         if (!Write(w.shape + 0x28, newCylinder)) return false;
         s.written = m;
+        s.worn = false;
         s.writtenCylinder = newCylinder;
     }
     // announce = the end of a mode change: every wheel gets its line, also one whose last value went in a few steps
@@ -994,6 +1032,7 @@ static bool HookTruckUpdate()
     void *real = nullptr;
     void **const slot = (void **)(g_base + g_build->foregroundSlot);
     if (g_foregroundReal) return true;
+    if (!g_build->truckUpdateReturn) return false; // not found in this build of the game: the damage is dealt by hand
     if (!Read(g_base + g_build->truckUpdateReturn - 6, call) || call[0] != 0xFF || call[1] != 0x15) return false;
     memcpy(&rel, call + 2, 4);
     if (g_build->truckUpdateReturn + (int64_t)rel != g_build->foregroundSlot) return false;
@@ -1303,16 +1342,24 @@ static DWORD WINAPI Run(void *)
     g_reshadeOk = PanelInit(g_self);
     // The mod's places in the exe, looked for by what the game's code is like around them (build_find.h), so it needs
     // no list of builds. Steam's exe only makes its code readable as it starts, so the first looks can come too early:
-    // they are repeated for a minute. Without every place and every check after that, this is a game version the mod
-    // cannot work on: it stands down and has changed nothing.
-    std::wstring missing;
+    // they are repeated for a minute. Without the places the mod cannot do without, this is a game version the mod
+    // cannot work on: it stands down and has changed nothing. With those but without the game-thread path (the truck
+    // update's call into Windows, or the damage update) the mod runs and deals tire damage from its own thread; that
+    // result has to come out the same ten looks in a row (five seconds) first, so that a look while Steam's exe is
+    // still unpacking its code cannot pass for it.
+    std::wstring missing, lastMissing;
     bool found = false;
-    int looks = 0;
-    for (; looks < 120 && !found; looks++)
+    int looks = 0, stood = 0;
+    for (; looks < 120; looks++)
     {
         if (looks) Sleep(500);
         std::vector<uint8_t> copy;
         found = CopyOwnImage(copy) && BuildFindAll({ copy.data(), copy.size(), g_base }, g_buildFound, missing);
+        if (!found) { stood = 0; continue; }
+        if (missing.empty()) break;
+        stood = missing == lastMissing ? stood + 1 : 1;
+        lastMissing = missing;
+        if (stood >= 10) break;
     }
     if (!found)
     {
@@ -1321,7 +1368,9 @@ static DWORD WINAPI Run(void *)
         return 0;
     }
     Log(L"game code found at look %d: control %llx, wheel class %llx, cylinder class %llx, damage update %llx, foreground slot %llx, truck update return %llx, first argument +%llx",
-        looks, g_build->control, g_build->wheelVtable, g_build->cylinderVtable, g_build->damageUpdate, g_build->foregroundSlot, g_build->truckUpdateReturn, g_build->firstArgument);
+        looks + 1, g_build->control, g_build->wheelVtable, g_build->cylinderVtable, g_build->damageUpdate, g_build->foregroundSlot, g_build->truckUpdateReturn, g_build->firstArgument);
+    if (!missing.empty())
+        Log(L"the game's truck update is not where the mod knows it, so tire damage will be dealt from the mod's own thread. Not as the mod knows it: %s", missing.c_str());
     LoadIni();
     if (!SoundStart(g_dir)) Log(L"sound: none, as its thread did not start");
     g_now = g_modes[g_mode]; // with a base grip, Normal is not the stock values: the first wheels get it straight away
@@ -1651,9 +1700,14 @@ static DWORD WINAPI Run(void *)
             }
         }
         rolling = speedOk && speed > (rolling ? 0.25f : 0.5f);
-        // the ground under each wheel picks its ground grip factor
+        // the ground under each wheel picks its ground grip factor; a worn out tire (the game's broken flag on its
+        // wheel model, see ApplyWornWheel) has none
         std::vector<float> groundFactor(wheels.size(), 1.0f);
-        for (size_t i = 0; i < wheels.size(); i++) groundFactor[i] = GroundFactor(g_now, wheels[i].wheel) * balance[i];
+        for (size_t i = 0; i < wheels.size(); i++)
+        {
+            BYTE broken = 0;
+            groundFactor[i] = Read(wheels[i].model + 0x328, broken) && broken ? 0.0f : GroundFactor(g_now, wheels[i].wheel) * balance[i];
+        }
         Mode forVehicle = g_now;
         if (!rolling) forVehicle.fuel = 1.0f;
         // the gears make up for the smaller collision cylinders, but for what a real tire loses (the wheels' mean)
@@ -1846,6 +1900,8 @@ static DWORD WINAPI Run(void *)
                 const auto wi = g_wheels.find(w.wheel);
                 if (wi != g_wheels.end()) kept.insert(*wi);
             }
+            // and those of worn out tires: their own grip values are nowhere else (a repaired tire would stay without grip)
+            for (const auto &rec : g_wheels) if (rec.second.worn) kept.insert(rec);
             g_wheels.swap(kept);
         }
     }
@@ -2071,12 +2127,13 @@ static bool BuildTest(const wchar_t *file)
     const bool same = b.image == kSteam.image && b.control == kSteam.control && b.wheelVtable == kSteam.wheelVtable && b.cylinderVtable == kSteam.cylinderVtable &&
                       b.damageUpdate == kSteam.damageUpdate && b.foregroundSlot == kSteam.foregroundSlot && b.truckUpdateReturn == kSteam.truckUpdateReturn &&
                       b.firstArgument == kSteam.firstArgument;
-    const bool ok = found && (!known || same);
+    const bool ok = found && (!known || (same && missing.empty()));
     printf("%s game code in %ls (build stamp %08x, image %x): control %llx, wheel class %llx, cylinder class %llx, damage update %llx, foreground slot %llx, "
            "truck update return %llx, first argument +%llx%s\n", ok ? "ok  " : "FAIL", file, b.stamp, b.image, b.control, b.wheelVtable, b.cylinderVtable, b.damageUpdate,
            b.foregroundSlot, b.truckUpdateReturn, b.firstArgument,
            !found ? "" : !known ? ": a build the test has no numbers for" : same ? ": as the mod was made with" : ": NOT the numbers the mod was made with");
     if (!found) printf("     not as the mod needs it: %ls\n", missing.c_str());
+    else if (!missing.empty()) printf("     without the game-thread path (tire damage would be dealt from the mod's own thread): %ls\n", missing.c_str());
     return ok;
 }
 

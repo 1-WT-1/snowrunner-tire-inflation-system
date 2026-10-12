@@ -1,8 +1,8 @@
 // build_find.h: finds, in an image of SnowRunner.exe, the few places the mod needs that lie elsewhere in every build
 // of the game, by what the game's code looks like around them, and checks that the game's objects are laid out as the
 // mod expects. The mod runs it on the running game's own image at its start; the offline test runs it on a copy of an
-// image in a file. Every place has to be found exactly once and every check has to hold, or there is no result: the mod
-// then stands down rather than write to places it only guesses.
+// image in a file. A place has to be found exactly once and every check has to hold, or the mod stands down rather than
+// write to places it only guesses; only the game-thread path may be missing (BuildFindAll says which places that is).
 #pragma once
 #include <stdint.h>
 #include <string.h>
@@ -168,7 +168,11 @@ static bool BuildFunction(const BuildImage &im, uint32_t rva, uint32_t &begin, u
     return false;
 }
 
-// Fills b from the image. report: what was not found, or found more than once (empty when all is well).
+// Fills b from the image. report: what was not found, or found more than once (empty when all is well). True when
+// the places the mod cannot do without are there: the two classes, the control global and the six checks of the
+// game's objects. The game-thread path (the damage update, the truck update's call through the import slot and the
+// way to its first argument) may be missing on a build of the game: its fields then stay zero, report names what was
+// not found, and the mod deals tire damage from its own thread instead.
 static bool BuildFindAll(const BuildImage &im, Build &b, std::wstring &report)
 {
     b = Build{};
@@ -184,45 +188,8 @@ static bool BuildFindAll(const BuildImage &im, Build &b, std::wstring &report)
     b.wheelVtable = BuildVtable(im, ".?AUTRUCK_WHEEL_PARAMS@combine@@", L"the wheel parameter class", report);
     b.cylinderVtable = BuildVtable(im, ".?AVhkpCylinderShape@@", L"the cylinder shape class", report);
 
-    // the damage update, by its first instructions (they hold the vehicle's +0x150)
-    b.damageUpdate = one(L"the damage update", BuildFind(im,
-        "48 8b c4 48 89 48 08 55 56 57 41 54 41 55 41 56 41 57 48 83 ec 50 48 c7 40 98 fe ff ff ff 48 89 58 18 0f 29 70 b8 0f 29 78 a8 4c 8b e9 "
-        "48 8d b9 50 01 00 00 48 8b cf e8"));
-
-    // the truck update asks Windows which window is in front: the call through the import slot, in a function that
-    // begins by putting its first argument into its home slot
-    b.foregroundSlot = BuildImportSlot(im, "USER32.dll", "GetForegroundWindow");
-    if (!b.foregroundSlot) BuildMiss(report, L"the import of GetForegroundWindow", 0);
-    const uint32_t site = one(L"the truck update's call of GetForegroundWindow",
-                              BuildFind(im, "40 b7 01 40 88 7c 24 50 44 0f b6 ff ff 15 ?? ?? ?? ?? 48 8b d8 e8 ?? ?? ?? ?? 48 3b c3 74"));
-    if (site)
-    {
-        const uint32_t call = site + 12;
-        uint32_t begin = 0, end = 0, pushes = 0, locals = 0;
-        static const uint8_t kHead[33] = { 0x48, 0x8b, 0xc4, 0xf3, 0x0f, 0x11, 0x58, 0x20, 0xf3, 0x0f, 0x11, 0x50, 0x18, 0x48, 0x89, 0x50, 0x10, 0x48, 0x89, 0x48, 0x08,
-                                           0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57 };
-        if ((uint64_t)call + 6 + im.i32(call + 2) != b.foregroundSlot) BuildMiss(report, L"the truck update's call through the import slot", 0);
-        else if (!BuildFunction(im, call, begin, end, pushes, locals) || begin + sizeof kHead > im.n || memcmp(im.p + begin, kHead, sizeof kHead))
-            BuildMiss(report, L"the truck update as the mod knows it", 0);
-        else
-        {
-            b.truckUpdateReturn = call + 6;
-            // its locals, its pushes, its own return address, then the home slot of its first argument
-            b.firstArgument = (uint64_t)locals + pushes * 8 + 16;
-            // the control global: the second of three small "return the address of a global" calls in a row
-            const uint32_t three = one(L"the control global", BuildFind(im,
-                "e8 ?? ?? ?? ?? 4c 8b 20 4c 89 65 c8 e8 ?? ?? ?? ?? 48 8b 30 48 89 75 a0 e8 ?? ?? ?? ?? 48 89 45 18 4c 8b 00 80 be d8 00 00 00 00", begin, end));
-            if (three)
-            {
-                const uint64_t target = (uint64_t)three + 17 + im.i32(three + 13);
-                if (target + 8 <= im.n && im.p[target] == 0x48 && im.p[target + 1] == 0x8d && im.p[target + 2] == 0x05 && im.p[target + 7] == 0xc3)
-                    b.control = target + 7 + im.i32((size_t)target + 3);
-                else BuildMiss(report, L"the control global's accessor", 0);
-            }
-        }
-    }
-
     // The game's objects as the mod reads and writes them: each of these is game code that uses the same positions.
+    // Found anywhere is enough: a second copy of the same instructions says the same about the positions.
     static const struct { const wchar_t *what; const char *pattern; } kLayout[] = {
         { L"the steering speed at vehicle+0x69C", "f3 0f 10 96 9c 06 00 00 f3 41 0f 5f d1" },
         { L"the fuel use at vehicle+0xE38 and +0xE3C", "f3 0f 10 83 3c 0e 00 00 f3 0f 58 83 38 0e 00 00 f3 0f 59 f0" },
@@ -231,7 +198,55 @@ static bool BuildFindAll(const BuildImage &im, Build &b, std::wstring &report)
         { L"the asphalt grip at wheel+0xA4", "f3 0f 59 8f a4 00 00 00 f3 0f 59 15" },
         { L"the wheel's radius and its offset at +0x94 and +0xB4", "f3 0f 10 9b 94 00 00 00 f3 0f 5c 9b b4 00 00 00" },
     };
-    for (const auto &check : kLayout) one(check.what, BuildFind(im, check.pattern));
+    bool layout = true;
+    for (const auto &check : kLayout)
+        if (BuildFind(im, check.pattern, 0, 0xFFFFFFFFu, 1).empty()) { BuildMiss(report, check.what, 0); layout = false; }
 
-    return report.empty() && b.control && b.wheelVtable && b.cylinderVtable && b.damageUpdate && b.foregroundSlot && b.truckUpdateReturn && b.firstArgument;
+    // the damage update, by its first instructions (they hold the vehicle's +0x150)
+    b.damageUpdate = one(L"the damage update", BuildFind(im,
+        "48 8b c4 48 89 48 08 55 56 57 41 54 41 55 41 56 41 57 48 83 ec 50 48 c7 40 98 fe ff ff ff 48 89 58 18 0f 29 70 b8 0f 29 78 a8 4c 8b e9 "
+        "48 8d b9 50 01 00 00 48 8b cf e8"));
+
+    // the truck update asks Windows which window is in front: the call through the import slot, in a function that
+    // begins by putting its first argument into its home slot
+    uint32_t begin = 0, end = 0; // the truck update's bounds, once known
+    b.foregroundSlot = BuildImportSlot(im, "USER32.dll", "GetForegroundWindow");
+    if (!b.foregroundSlot) BuildMiss(report, L"the import of GetForegroundWindow", 0);
+    const uint32_t site = one(L"the truck update's call of GetForegroundWindow",
+                              BuildFind(im, "40 b7 01 40 88 7c 24 50 44 0f b6 ff ff 15 ?? ?? ?? ?? 48 8b d8 e8 ?? ?? ?? ?? 48 3b c3 74"));
+    if (site && b.foregroundSlot)
+    {
+        const uint32_t call = site + 12;
+        uint32_t pushes = 0, locals = 0;
+        static const uint8_t kHead[33] = { 0x48, 0x8b, 0xc4, 0xf3, 0x0f, 0x11, 0x58, 0x20, 0xf3, 0x0f, 0x11, 0x50, 0x18, 0x48, 0x89, 0x50, 0x10, 0x48, 0x89, 0x48, 0x08,
+                                           0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57 };
+        if ((uint64_t)call + 6 + im.i32(call + 2) != b.foregroundSlot) BuildMiss(report, L"the truck update's call through the import slot", 0);
+        else if (!BuildFunction(im, call, begin, end, pushes, locals) || begin + sizeof kHead > im.n || memcmp(im.p + begin, kHead, sizeof kHead))
+        {
+            BuildMiss(report, L"the truck update as the mod knows it", 0);
+            begin = end = 0;
+        }
+        else
+        {
+            b.truckUpdateReturn = call + 6;
+            // its locals, its pushes, its own return address, then the home slot of its first argument
+            b.firstArgument = (uint64_t)locals + pushes * 8 + 16;
+        }
+    }
+    // the game-thread path is all or nothing: without any part of it the mod deals the damage on its own thread
+    if (!b.damageUpdate || !b.foregroundSlot || !b.truckUpdateReturn) b.damageUpdate = b.foregroundSlot = b.truckUpdateReturn = b.firstArgument = 0;
+
+    // the control global: the second of three small "return the address of a global" calls in a row, inside the
+    // truck update where that is known, else anywhere in the code
+    const uint32_t three = one(L"the control global", BuildFind(im,
+        "e8 ?? ?? ?? ?? 4c 8b 20 4c 89 65 c8 e8 ?? ?? ?? ?? 48 8b 30 48 89 75 a0 e8 ?? ?? ?? ?? 48 89 45 18 4c 8b 00 80 be d8 00 00 00 00", begin, end ? end : 0xFFFFFFFFu));
+    if (three)
+    {
+        const uint64_t target = (uint64_t)three + 17 + im.i32(three + 13);
+        if (target + 8 <= im.n && im.p[target] == 0x48 && im.p[target + 1] == 0x8d && im.p[target + 2] == 0x05 && im.p[target + 7] == 0xc3)
+            b.control = target + 7 + im.i32((size_t)target + 3);
+        else BuildMiss(report, L"the control global's accessor", 0);
+    }
+
+    return layout && b.control && b.wheelVtable && b.cylinderVtable;
 }

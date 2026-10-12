@@ -4,7 +4,7 @@
 #pragma once
 #include <windows.h>
 #include <xinput.h>
-#define TP_VERSION "1.1.0"
+#define TP_VERSION "1.1.1"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,6 +26,7 @@ struct PanelView
     volatile LONG count;     // modes on the gauge: 3 (Low to Normal) or 4 (Increased too)
     volatile LONG warn;      // 1 while the truck is too fast for its tire pressure (the tires take damage): the warning
     volatile LONG wear;      // the most worn tire's damage in percent of what it takes, -1 = not known (shown in the warning)
+    volatile LONG hold;      // 1 while a pressure change waits for the truck to stand still (StandStill): the hint
 };
 
 extern PanelView g_view;
@@ -58,6 +59,10 @@ struct TpSettings
     bool increased;          // Increased: the Increased pressure mode above Normal
     bool tireDamage;         // TireDamage: driving too fast for the pressure wears the tires (the modes' MinVel .. DamageTick)
     bool rollingRadius;      // RollingRadius: the gears make up for the flattened wheels, but for what a real tire loses
+    bool standStill;         // StandStill: a pressure change only goes on while the truck stands still
+    bool temperature;        // Temperature: the tires feel the outside temperature (the air in them, the rubber's grip; outside.h)
+    float ambientC;          // AmbientC: the outside temperature where no other mod publishes one, -40 to 50
+    bool hardMode;           // HardMode: the realistic numbers and options (HardSettings) in place of the settings above and the modes
     float mode[3][14];       // [Reduced], [Low], [Increased]: the keys of kModeKeys
 };
 static const int kSettingsModes[3] = { kReduced, kLow, kIncreased }; // PressureMode of TpSettings::mode[i]
@@ -104,6 +109,10 @@ inline void SettingsDefaults(TpSettings &s)
     s.increased = true;
     s.tireDamage = true;
     s.rollingRadius = true;
+    s.standStill = true;
+    s.temperature = true;
+    s.ambientC = 15.0f;
+    s.hardMode = false;
     // Reduced and Low: the "default tire inflation" set of an Expeditions tire file, but for asphalt: Expeditions'
     // 1.3 / 2.0 are for its rock models, while in SnowRunner that grip only acts on paved ground (IsAsphalt roads,
     // concrete, pavers, bridges; rocks count as ground). Aired down on pavement the wider patch is eaten up by the
@@ -124,6 +133,39 @@ inline void SettingsDefaults(TpSettings &s)
     memcpy(s.mode, modes, sizeof modes);
 }
 
+// Each mode's pressure as a share of Normal's: the scale the tires' pressure moves along between modes, and what the
+// outside temperature works on. Normal is taken as 35 psi; the others are this mod's choice.
+static const float kModePressure[kModeCount] = { 0.45f, 0.65f, 1.0f, 1.25f };
+
+// Hard mode: the numbers and options nearest to real tires (HardMode=1). Airing a tire down to half its pressure
+// lengthens its contact patch by about half: that much more grip on sand and soft ground, a little less on hard
+// ground; over-inflating does the reverse and gains nothing on asphalt. The flattening is a few centimetres. Rolling
+// resistance, and the fuel with it, rises as the pressure falls. A soft tire's sidewalls flex and heat at speed, so
+// its wear starts higher up than the defaults but ends a tire faster. A change takes half a minute, as a truck's
+// compressor does. The numbers are this mod's; the reasoning is the physics above.
+static const float kHardModes[3][kModeKeyCount] = {
+    { 1.3f, 0.9f, 1.18f, 0.025f, 1.12f, 0.9f, 1.15f, 1.45f, 1.3f, 50.0f / 3.6f, 75.0f / 3.6f, 1.0f, 6.0f, 10.0f },  // Reduced
+    { 1.6f, 0.8f, 1.35f, 0.05f, 1.25f, 0.8f, 1.3f, 1.9f, 1.6f, 30.0f / 3.6f, 55.0f / 3.6f, 2.0f, 10.0f, 8.0f },   // Low
+    { 0.92f, 0.97f, 0.9f, 0.0f, 0.96f, 1.05f, 0.95f, 0.85f, 0.92f, 0.0f, 0.0f, 0.0f, 0.0f, 7.0f } };            // Increased
+static const float kHardSeconds = 30.0f;
+
+// Puts hard mode's numbers and options into s: everything but the controls, the panel, the sounds and the outside
+// temperature, which stay the player's.
+inline void HardSettings(TpSettings &s)
+{
+    s.seconds = kHardSeconds;
+    s.base[0] = s.base[1] = s.base[2] = 1.0f;
+    s.vanillaBalance = true;
+    s.balanceStrength = 1.0f;
+    s.asphaltFloor = 0.0f;
+    s.increased = true;
+    s.tireDamage = true;
+    s.rollingRadius = true;
+    s.standStill = true;
+    s.temperature = true;
+    memcpy(s.mode, kHardModes, sizeof s.mode);
+}
+
 void SettingsGet(TpSettings &out);        // the settings in force (any thread)
 void SettingsPut(const TpSettings &in);   // edited settings: the mod applies them at once and saves the ini
 void SettingsReload();                    // read the ini again (the page's button)
@@ -139,6 +181,10 @@ struct TpLive
     float speed;                 // km/h
     int damage, capacity;        // the first wheel's tire damage; capacity 0 = not found
     float room;                  // metres the game can draw the first wheel's tire flatter (the modes' flattening fits in it); below 0 = not known
+    float outsideC;              // the outside temperature in force
+    int outsideFrom;             // 0 = AmbientC, 1 = another mod's block (outside.h)
+    float pressure;              // the tires' pressure as a share of Normal's, where it stands between the modes
+    float pressureAir;           // the same as the outside temperature leaves it (what the grip goes by)
 };
 enum { kSurfaceDirt, kSurfaceGravel, kSurfaceSand, kSurfaceRock, kSurfacePaved };
 void LiveGet(TpLive &out);

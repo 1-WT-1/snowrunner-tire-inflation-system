@@ -183,7 +183,7 @@ static int SettingsPage(TpSettings &s, const TpLive &live, PageState &st, uint32
     ImGui::SeparatorText("Tire damage at speed");
     changed(ImGui::Checkbox("Soft tires wear when driven fast", &s.tireDamage));
     PageTip("Faster than the first speed, every wheel on the ground takes damage each time the interval passes, more "
-            "the faster, up to the second speed. A worn out tire goes flat. A wheel takes about 50.");
+            "the faster, up to the second speed. A worn out tire goes flat and has no grip until it is repaired. A wheel takes about 50.");
     ImGui::BeginDisabled(!s.tireDamage);
     if (ImGui::BeginTable("wear", 3, ImGuiTableFlags_SizingFixedFit))
     {

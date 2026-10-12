@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.1]
+
+- A worn out tire has no grip until it is repaired: 0 on the ground, on asphalt and in mud. Before, a flat tire kept its pressure mode's grip.
+- The mod runs on a build of the game where it finds everything but the game's damage update or the truck update's call into Windows. Tire damage is then dealt from the mod's own thread, and the log says so. Before, the mod stood down on such a build. The six checks of the game's objects count when found anywhere, not only once.
+
 ## [1.1.0] 2026-10-07
 
 - Sounds. Deflating plays the air being let out, which gets weaker as the tires empty. Filling plays the air going in. Both are recordings of a real tire.

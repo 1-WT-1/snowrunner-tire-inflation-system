@@ -8,7 +8,7 @@ The truck you drive gets four pressure modes: Low, Reduced, Normal and Increased
 
 ## What you need
 
-- SnowRunner for Windows. The mod was made on the Steam version (the game build of 22 July 2026). At every start it looks for the places it needs in the game's code. Where it does not find every one of them, on another build of the game, it writes that into its log and does nothing. The Epic Games Store version has not been tested.
+- SnowRunner for Windows. The mod was made on the Steam version (the game build of 22 July 2026). At every start it looks for the places it needs in the game's code. Where it does not find the ones it cannot do without, on another build of the game, it writes that into its log and does nothing. The Epic Games Store and Game Pass versions have not been tested.
 - For the panel and the settings tab: ReShade 6.8.0 or newer, the build "with full add-on support". The zip brings it along. Without ReShade the key still changes the pressure. Switch `Beep` on in the ini to hear which mode you are in.
 
 ## Install
@@ -77,7 +77,7 @@ Soft tires wear when the truck is too fast for them:
 | Damage per wheel | 4 to 8 | 2 to 6 |
 | Every | 7 seconds | 10 seconds |
 
-A SnowRunner wheel takes about 50 damage. While the truck is too fast a warning shows at the top left with the most worn tire's damage in percent, and with the beep switched on a low beep marks each hit. A worn out tire goes flat. This is the game's own wheel damage: the game's wheel icon turns red for a flat tire, the damage stays in the save, and it is repaired like any other damage. The numbers start from those of Expeditions' off-road tires, with twice the damage at lower speeds, as SnowRunner's trucks are slower off the road.
+A SnowRunner wheel takes about 50 damage. While the truck is too fast a warning shows at the top left with the most worn tire's damage in percent, and with the beep switched on a low beep marks each hit. A worn out tire goes flat and has no grip at all until it is repaired. This is the game's own wheel damage: the game's wheel icon turns red for a flat tire, the damage stays in the save, and it is repaired like any other damage. The numbers start from those of Expeditions' off-road tires, with twice the damage at lower speeds, as SnowRunner's trucks are slower off the road.
 
 ## Settings
 
@@ -125,13 +125,13 @@ A few places the mod needs lie elsewhere in every build of the game's exe. It fi
 
 A thread in the game process reads and writes the game's own values 20 times a second, through `ReadProcessMemory` and `WriteProcessMemory` on its own process, so an object the game frees under it gives an error and no crash. No game code is patched. Three of the game's pointers are pointed at the mod: its two pointers to `XInputGetState` and one entry of its import table.
 
-At its start the mod looks through the exe for the places it needs: two of the game's classes by their names, the game's damage update, the truck update's call into Windows and the global that leads to the driven truck. It also checks six spots of game code that use the same positions inside the game's objects as the mod does. Every one has to be there exactly once. If not, the mod stands down and has changed nothing.
+At its start the mod looks through the exe for the places it needs: two of the game's classes by their names, the global that leads to the driven truck, the game's damage update and the truck update's call into Windows. It also checks six spots of game code that use the same positions inside the game's objects as the mod does. Without the classes, the global or one of the six, the mod stands down and has changed nothing. Without the damage update or the truck update's call it runs, and deals tire damage from its own thread.
 
-- Grip: the asphalt and mud grip of each wheel, and the truck's list of ground grip values, one per wheel. The game marks each wheel every frame with the kind of ground under it (gravel, sand, hard, paved), and the mod picks the factor from that.
+- Grip: the asphalt and mud grip of each wheel, and the truck's list of ground grip values, one per wheel. The game marks each wheel every frame with the kind of ground under it (gravel, sand, hard, paved), and the mod picks the factor from that. A worn out tire gets 0 in all three until the game repairs it.
 - Flattening: the radius of the wheel's collision cylinder, held to what the game's wheel shader can draw flat.
 - Speed: in the game the wheel is its collision cylinder, so a flattened tire would lose about three times the speed a real one does, whose belt keeps its length. The mod raises the truck's gear speeds by the difference.
 - Fuel and steering: the truck's fuel consumption values and its steering speed.
-- Damage: the game's damage data for each wheel. The game's truck update asks Windows once a frame which window is in front. That import table entry leads through the mod, which deals the damage at that moment, on the game's own thread, and then runs the game's damage update. The update makes a worn out tire flat, mends a repaired one and sums the truck's damage.
+- Damage: the game's damage data for each wheel. The game's truck update asks Windows once a frame which window is in front. That import table entry leads through the mod, which deals the damage at that moment, on the game's own thread, and then runs the game's damage update. The update makes a worn out tire flat, mends a repaired one and sums the truck's damage. On a build of the game where the mod does not find that call, it deals the damage from its own thread and makes the worn out tire flat itself; the game's damage display then follows at the next damage the game deals.
 - Pad: the game keeps two pointers to `XInputGetState`. The mod points both at a filter that hides the panel's buttons from the game while the panel uses them.
 - Panel: drawn through ReShade's add-on overlay. The text is baked from the game's own font files at run time.
 - Sound: a thread of its own plays through XAudio2, the library the game brings and uses itself, and only holds a sound device while a sound plays. The two recordings are in the `.asi` (`assets`, `src\sounds.rc`): each has its start, a steady part that goes round for as long as the change lasts, and its stop. The compressor is made by code: 47 knocks a second that ring in a housing, with the air it draws and the motor's hum. The air it lets go as it stops comes out of the game's `shared_sound.pak`, a zip in which the samples lie as WAV files. A tank decides when the compressor runs: a filling takes air out of it, and below a mark the compressor runs until it is full.
