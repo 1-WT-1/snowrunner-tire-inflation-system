@@ -104,7 +104,7 @@ static void OnDestroyDevice(reshade::api::device *device)
 
 static void OnOverlay(reshade::api::effect_runtime *runtime)
 {
-    static float alpha = 0.0f, needle = 0.0f, warn = 0.0f;
+    static float alpha = 0.0f, needle = 0.0f, warn = 0.0f, hold = 0.0f;
     if (g_modOff) return;
     g_overlayThread = (LONG)GetCurrentThreadId();
     ImGuiIO &io = ImGui::GetIO();
@@ -115,10 +115,18 @@ static void OnOverlay(reshade::api::effect_runtime *runtime)
     const bool open = g_view.open != 0;
     alpha = fminf(fmaxf(alpha + (open ? dt : -dt) / 0.15f, 0.0f), 1.0f);
     warn = fminf(fmaxf(warn + (g_view.warn ? dt : -dt) / 0.25f, 0.0f), 1.0f);
+    hold = fminf(fmaxf(hold + (g_view.hold ? dt : -dt) / 0.25f, 0.0f), 1.0f);
     const ImVec2 at = PanelOrigin(io.DisplaySize.x, io.DisplaySize.y);
-    // the tire damage warning shows while the panel is closed
+    // the tire damage warning shows while the panel is closed, and below it the hint that a change waits for the
+    // truck to stand still
     if (warn * (1.0f - alpha) > 0.0f)
         PanelWarning(ImGui::GetForegroundDrawList(), g_fonts, PanelWarnOrigin(io.DisplaySize.x, io.DisplaySize.y), u, warn * (1.0f - alpha), (int)g_view.wear);
+    if (hold * (1.0f - alpha) > 0.0f)
+    {
+        ImVec2 holdAt = PanelWarnOrigin(io.DisplaySize.x, io.DisplaySize.y);
+        if (warn > 0.0f) holdAt.y += (kPanelWarnH + 16.0f) * u;
+        PanelHold(ImGui::GetForegroundDrawList(), g_fonts, holdAt, u, hold * (1.0f - alpha));
+    }
     const int sel = (int)g_view.selected, cur = (int)g_view.current;
     if (alpha <= 0.0f) { needle = (float)cur; return; }
     needle += ((float)sel - needle) * fminf(dt * 12.0f, 1.0f);

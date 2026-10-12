@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0]
+
+- Pressure changes only while the truck stands still, `StandStill`, on by default: a choice made while driving waits, a change under way pauses, and a hint at the top left says so.
+- The tires feel the outside temperature, `Temperature`, on by default. The air in them follows the gas law (Normal taken as 35 psi: 83% of its pressure at 20 below, 110% at 35 above), so cold tires run softer, flatter and with more grip on soft ground; cold rubber grips less, most on asphalt and rock; in the heat soft tires wear from lower speeds. `AmbientC` sets the temperature (15 C); a gauge mod by the same author hands it over by map and hour while it runs. The tab shows the temperature in force and the pressure the tires hold.
+- Hard mode, `HardMode`: the numbers and options nearest to real tires, all at once, with every other gameplay setting greyed out in the tab while it is on. `TirePressure.ini` keeps your own numbers.
+- The pressure moves between the modes on one scale (Low 45%, Reduced 65%, Normal 100%, Increased 125% of Normal's) at one pace: Normal to Low in `Seconds`, Normal to Reduced in about two thirds of that (1.1: four fifths), a step to Increased in a little under half.
+- A factor edited in the tab counts at once (1.1: the tires walked to it over `Seconds`).
+
 ## [1.1.1]
 
 - A worn out tire has no grip until it is repaired: 0 on the ground, on asphalt and in mud. Before, a flat tire kept its pressure mode's grip.

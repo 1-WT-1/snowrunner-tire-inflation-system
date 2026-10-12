@@ -468,3 +468,16 @@ static void PanelWarning(ImDrawList *dl, const PanelFonts &f, ImVec2 at, float u
         dl->AddRectFilled(P(12, kPanelWarnH - 9), P(12 + (kPanelRefW - 12) * (float)shown / 100.0f, kPanelWarnH), PanelCol(225, 58, 70, a));
     }
 }
+
+// The hint while a pressure change waits for the truck to stand still (StandStill): the warning's place and shape,
+// with amber for its red; below the warning when that shows too.
+static const float kPanelHoldH = 148.0f;
+static void PanelHold(ImDrawList *dl, const PanelFonts &f, ImVec2 at, float u, float a)
+{
+    const float x0 = floorf(at.x), y0 = floorf(at.y);
+    auto P = [&](float x, float y) { return ImVec2(x0 + x * u, y0 + y * u); };
+    dl->AddRectFilled(P(0, 0), P(kPanelRefW, kPanelHoldH), PanelCol(5, 5, 5, 0.94f * a), 3.0f * u);
+    dl->AddRectFilled(P(0, 0), P(12, kPanelHoldH), PanelCol(236, 182, 48, a), 3.0f * u, ImDrawFlags_RoundCornersLeft);
+    PanelText(dl, f, kMode, P(44, 50), PanelCol(255, 255, 255, a), "TIRE PRESSURE", -1, u);
+    PanelText(dl, f, kLabel, P(44, 101), PanelCol(142, 150, 152, a), "Stop the truck to change the pressure", -1, u);
+}

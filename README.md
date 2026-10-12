@@ -2,7 +2,7 @@
 
 Tire pressure you change while driving, as in Expeditions: A MudRunner Game.
 
-The truck you drive gets four pressure modes: Low, Reduced, Normal and Increased. Let air out and the tires flatten, grip harder on dirt, sand, rock and in mud, and lose grip on asphalt. The truck also uses more fuel and steers slower. Increased is the road mode: more grip on asphalt, less everywhere else, less fuel. Soft tires driven too fast take damage until they go flat. You pick the mode on Expeditions' panel, drawn in SnowRunner's font, with the pad or a key. You hear the air go out and in, and every few fillings the compressor.
+The truck you drive gets four pressure modes: Low, Reduced, Normal and Increased. Let air out and the tires flatten, grip harder on dirt, sand, rock and in mud, and lose grip on asphalt. The truck also uses more fuel and steers slower. Increased is the road mode: more grip on asphalt, less everywhere else, less fuel. Soft tires driven too fast take damage until they go flat, and a flat tire has no grip. Cold air and cold rubber change how the tires grip, a change of pressure waits for the truck to stand still, and hard mode sets everything to the most realistic numbers. You pick the mode on Expeditions' panel, drawn in SnowRunner's font, with the pad or a key. You hear the air go out and in, and every few fillings the compressor.
 
 ![The panel in Low, Reduced, Normal and Increased, and as the keyboard shows it](docs/panel.png)
 
@@ -34,7 +34,7 @@ With a pad (any pad Windows sees as an Xbox pad):
 
 With the keyboard, F3 opens the panel and steps the pressure down, from Low round to the highest mode. There is no key to confirm with: leave the choice alone.
 
-A choice left alone confirms itself after 5 seconds. The tires then take up to 6 seconds to deflate or inflate: 6 from Normal to Low, less for a smaller step. With the beep switched on (it is off unless you turn it on), the mod beeps as the change begins: once for Normal, twice for Reduced, three times for Low, one high beep for Increased.
+A choice left alone confirms itself after 5 seconds. The tires then take up to 6 seconds to deflate or inflate: 6 from Normal to Low, less for a smaller step (the pressure moves on one scale: Low is 45% of Normal's, Reduced 65%, Increased 125%). The change only goes on while the truck stands still: a choice made while driving waits, and a hint at the top left says so (`StandStill`, see Realism). With the beep switched on (it is off unless you turn it on), the mod beeps as the change begins: once for Normal, twice for Reduced, three times for Low, one high beep for Increased.
 
 The mode belongs to the truck you drive: another truck takes the current mode when you get in. Every game start begins at Normal.
 
@@ -79,11 +79,38 @@ Soft tires wear when the truck is too fast for them:
 
 A SnowRunner wheel takes about 50 damage. While the truck is too fast a warning shows at the top left with the most worn tire's damage in percent, and with the beep switched on a low beep marks each hit. A worn out tire goes flat and has no grip at all until it is repaired. This is the game's own wheel damage: the game's wheel icon turns red for a flat tire, the damage stays in the save, and it is repaired like any other damage. The numbers start from those of Expeditions' off-road tires, with twice the damage at lower speeds, as SnowRunner's trucks are slower off the road.
 
+## Realism
+
+Three settings in the tab and the ini. The first two are on by default.
+
+- Pressure changes only while the truck stands still (`StandStill`). A choice made while driving waits, and a change under way pauses, until the truck stands. A hint at the top left says so.
+- The tires feel the outside temperature (`Temperature`). The air in them follows the gas law, with Normal taken as 35 psi: at 20 below, Normal holds 83% of its pressure and runs softer, flatter and with more grip on soft ground, and Low is as soft as the tires go; at 35 above, Normal holds 110%. Cold rubber grips less, most on asphalt and rock: a fifth less at 20 below. Warm rubber grips a little more on asphalt. In the heat soft tires wear from lower speeds, in the cold from higher ones. The modes' numbers are for 15 C. The outside temperature is `AmbientC` (the tab's slider, 15 to begin with), or comes by map and hour from a gauge mod by the same author while that runs: it publishes the temperature in a block of shared memory, whose layout `src\outside.h` has. The tab shows the temperature in force and the pressure the tires hold.
+- Hard mode (`HardMode`). The numbers and options nearest to real tires, all at once: a change takes half a minute and only while the truck stands, the tires feel the outside temperature, soft tires wear, flattened tires roll like real ones, vanilla balance is on, no asphalt floor, no base grip, and the modes get these numbers:
+
+| | Low | Reduced | Increased |
+|---|---|---|---|
+| Grip on dirt | x1.6 | x1.3 | x0.92 |
+| Grip on gravel | x1.3 | x1.15 | x0.95 |
+| Grip on sand | x1.9 | x1.45 | x0.85 |
+| Grip on rock | x1.6 | x1.3 | x0.92 |
+| Grip on asphalt | x0.8 | x0.9 | x0.97 |
+| Grip in mud | x1.35 | x1.18 | x0.9 |
+| Tire radius | 5 cm less | 2.5 cm less | unchanged |
+| Fuel use while moving | x1.25 | x1.12 | x0.96 |
+| Steering speed | x0.8 | x0.9 | x1.05 |
+| Wear starts above | 30 km/h | 50 km/h | |
+| Most wear from | 55 km/h | 75 km/h | |
+| Damage per wheel | 2 to 10 | 1 to 6 | |
+| Every | 8 seconds | 10 seconds | |
+
+Airing a tire down to half its pressure lengthens its contact patch by about half, which is that much more grip on sand and soft ground and a little less on hard ground; over-inflating does the reverse and gains nothing on asphalt. A soft tire's sidewalls flex and heat at speed, so its wear starts higher up than the defaults but ends a tire faster. While hard mode is on, every other setting but the outside temperature, the controls, the panel and the sounds is greyed out in the tab, and `TirePressure.ini` keeps your own numbers for when it is off.
+
 ## Settings
 
 With ReShade, the overlay has a Tire Inflation System tab. It shows the truck's tires, the ground under the first wheel and the speed, and it edits every setting while you play:
 
-- Every number in the two tables above, and tire damage on or off.
+- Every number in the two tables of the modes, and tire damage on or off.
+- Hard mode, changes only while standing still, the outside temperature and whether the tires feel it.
 - Whether flattened tires roll like real ones. On by default. Off, the truck loses about three times as much speed.
 - Vanilla balance: tires that grip better than every vanilla tire on ground, asphalt and mud at once (some modded trucks have them) come down to the best vanilla tire of their kind. Vanilla tires stay as they are. Off by default.
 - Base grip for ground, asphalt and mud: scales every mode, Normal too.
@@ -117,7 +144,7 @@ build.bat
 test.bat
 ```
 
-`build.bat` makes `out\version.dll` and `out\TirePressure.asi`. `test.bat` runs the offline tests: the loader on a test `.asi`, the loader with a copy of itself as its chain file, the loader behind another ASI loader that had the `.asi` first, and the mod's own checks (every setting through the ini and back, the flattening and gear numbers, the readers of the sound files, the compressor's tank). `out\test\probe_test.exe sound` plays the sounds through the default sound device as the mod does in the game. `test\build_preview.bat` builds a program that draws the panel, the warning and the settings tab into PNG files without the game and checks the pad binding window. It needs the Dear ImGui sources, see the file.
+`build.bat` makes `out\version.dll` and `out\TirePressure.asi`. `test.bat` runs the offline tests: the loader on a test `.asi`, the loader with a copy of itself as its chain file, the loader behind another ASI loader that had the `.asi` first, and the mod's own checks (every setting through the ini and back, the flattening and gear numbers, the pressure scale, the outside temperature and hard mode, the readers of the sound files, the compressor's tank). `out\test\probe_test.exe sound` plays the sounds through the default sound device as the mod does in the game. `test\build_preview.bat` builds a program that draws the panel, the warning and the settings tab into PNG files without the game and checks the pad binding window. It needs the Dear ImGui sources, see the file.
 
 A few places the mod needs lie elsewhere in every build of the game's exe. It finds them itself (`src\build_find.h`). `out\test\probe_test.exe find <exe>` runs the same search on an exe in a file and prints what it found and what it did not. Steam's exe on disk will not do for that, as its code is only readable in the running game. With `SR_IMAGE` set to a copy of the exe's image from a running game, `test.bat` checks the search against the numbers of the Steam build.
 
@@ -131,6 +158,7 @@ At its start the mod looks through the exe for the places it needs: two of the g
 - Flattening: the radius of the wheel's collision cylinder, held to what the game's wheel shader can draw flat.
 - Speed: in the game the wheel is its collision cylinder, so a flattened tire would lose about three times the speed a real one does, whose belt keeps its length. The mod raises the truck's gear speeds by the difference.
 - Fuel and steering: the truck's fuel consumption values and its steering speed.
+- The pressure: one number, the tires' pressure as a share of Normal's, moves between the modes at the set pace, and every factor is read off it between the two nearest modes. The outside temperature moves that number by the gas law before the factors are read, and scales the grip for the rubber. The temperature is read from another mod's block of shared memory (`src\outside.h`) while that is there and fresh, else from `AmbientC`.
 - Damage: the game's damage data for each wheel. The game's truck update asks Windows once a frame which window is in front. That import table entry leads through the mod, which deals the damage at that moment, on the game's own thread, and then runs the game's damage update. The update makes a worn out tire flat, mends a repaired one and sums the truck's damage. On a build of the game where the mod does not find that call, it deals the damage from its own thread and makes the worn out tire flat itself; the game's damage display then follows at the next damage the game deals.
 - Pad: the game keeps two pointers to `XInputGetState`. The mod points both at a filter that hides the panel's buttons from the game while the panel uses them.
 - Panel: drawn through ReShade's add-on overlay. The text is baked from the game's own font files at run time.

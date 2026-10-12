@@ -79,6 +79,10 @@ static int SettingsPage(TpSettings &s, const TpLive &live, PageState &st, uint32
     const float em = ImGui::GetFontSize(), labelX = em * 12.0f, w = em * 14.0f;
     char buf[64];
     static const char *modeNames[kModeCount] = { "Low", "Reduced", "Normal", "Increased" };
+    // hard mode: its numbers and options are shown, greyed out, in place of the player's own, which the ini keeps
+    TpSettings hard = s;
+    if (s.hardMode) HardSettings(hard);
+    TpSettings &e = s.hardMode ? hard : s;
 
     ImGui::SeparatorText("Truck");
     if (live.wheels > 0)
@@ -91,8 +95,8 @@ static int SettingsPage(TpSettings &s, const TpLive &live, PageState &st, uint32
             if (t >= 0.999f) ImGui::TextDisabled("No vanilla tire grips less in all three: vanilla balance leaves these alone.");
             else
             {
-                const float k = s.vanillaBalance ? live.balance : t;
-                ImGui::Text("Vanilla balance %s x%.2f: ground %.2f, asphalt %.2f, mud %.2f.", s.vanillaBalance ? "makes that" : "would make that",
+                const float k = e.vanillaBalance ? live.balance : t;
+                ImGui::Text("Vanilla balance %s x%.2f: ground %.2f, asphalt %.2f, mud %.2f.", e.vanillaBalance ? "makes that" : "would make that",
                             k, live.ground * k, live.asphalt * k, live.mud * k);
             }
         }
@@ -101,17 +105,42 @@ static int SettingsPage(TpSettings &s, const TpLive &live, PageState &st, uint32
         ImGui::Text("First wheel on %s, %.0f km/h.", surfaces[live.surface < 0 || live.surface > kSurfacePaved ? kSurfaceDirt : live.surface], live.speed);
         if (live.capacity > 0) ImGui::Text("Its tire: %d of %d damage.", live.damage, live.capacity);
         if (live.room >= 0.0f) ImGui::Text("The game draws it up to %.1f cm flatter.", live.room * 100.0f);
+        ImGui::Text("Outside %.0f C (%s): the tires hold %.0f%% of Normal's pressure, %.0f%% once the air's temperature counts.", live.outsideC,
+                    live.outsideFrom ? "another mod's, by map and hour" : "AmbientC", live.pressure * 100.0f, live.pressureAir * 100.0f);
     }
     else ImGui::TextDisabled("No truck driven.");
 
+    ImGui::SeparatorText("Realism");
+    changed(ImGui::Checkbox("Hard mode", &s.hardMode));
+    PageTip("The numbers and options nearest to real tires, all at once: a change takes half a minute and only while the truck "
+            "stands, the tires feel the outside temperature, soft tires wear, flattened tires roll like real ones, vanilla "
+            "balance is on, and the modes get gentler numbers (half the pressure is about half again the contact patch). "
+            "While it is on, everything below but the outside temperature, the controls, the panel and the sounds is set by "
+            "it and greyed out; TirePressure.ini keeps your own numbers for when it is off.");
+    ImGui::BeginDisabled(s.hardMode);
+    changed(ImGui::Checkbox("Pressure changes only while the truck stands still", &e.standStill));
+    PageTip("A choice made while driving waits, and a change under way pauses, until the truck stands. A hint at the top left says so.");
+    changed(ImGui::Checkbox("Tires feel the outside temperature", &e.temperature));
+    PageTip("The air in the tires follows the outside temperature (the gas law, Normal taken as 35 psi): cold air is less "
+            "pressure, so the tires run softer, flatter and with more grip on soft ground, and Low is as soft as they go; "
+            "cold rubber grips less, most on asphalt and rock; warm air is a little more pressure, warm rubber a little more "
+            "grip on asphalt; in the heat soft tires wear from lower speeds. The modes' numbers are for 15 C.");
+    ImGui::EndDisabled();
+    PageLabel("Outside temperature", labelX);
+    ImGui::SetNextItemWidth(w);
+    changed(ImGui::SliderFloat("##outside", &s.ambientC, -40.0f, 50.0f, "%.0f C", ImGuiSliderFlags_AlwaysClamp));
+    PageTip("Where no other mod publishes the outside temperature. A gauge mod by the same author gives it by map and hour "
+            "while it runs, and this slider is then not in force.");
+
     ImGui::SeparatorText("Grip");
-    changed(ImGui::Checkbox("Vanilla balance", &s.vanillaBalance));
+    ImGui::BeginDisabled(s.hardMode);
+    changed(ImGui::Checkbox("Vanilla balance", &e.vanillaBalance));
     PageTip("Tires that grip better than every vanilla tire on ground, asphalt and mud at once come down to the best "
             "vanilla tire of their kind. Vanilla tires stay as they are.");
-    ImGui::BeginDisabled(!s.vanillaBalance);
+    ImGui::BeginDisabled(!e.vanillaBalance);
     PageLabel("Balance strength", labelX);
     ImGui::SetNextItemWidth(w);
-    changed(ImGui::SliderFloat("##strength", &s.balanceStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp));
+    changed(ImGui::SliderFloat("##strength", &e.balanceStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp));
     PageTip("1 = all the way to the vanilla tire, 0.5 = half way.");
     ImGui::EndDisabled();
     static const char *baseNames[3] = { "Ground grip", "Asphalt grip", "Mud grip" };
@@ -120,18 +149,18 @@ static int SettingsPage(TpSettings &s, const TpLive &live, PageState &st, uint32
         PageLabel(baseNames[i], labelX);
         ImGui::SetNextItemWidth(w);
         ImGui::PushID(i);
-        changed(ImGui::SliderFloat("##base", &s.base[i], 0.3f, 2.0f, "x%.2f", ImGuiSliderFlags_AlwaysClamp));
+        changed(ImGui::SliderFloat("##base", &e.base[i], 0.3f, 2.0f, "x%.2f", ImGuiSliderFlags_AlwaysClamp));
         ImGui::PopID();
         PageTip("Every mode, Normal too, on top of the vanilla balance.");
     }
     PageLabel("Asphalt floor", labelX);
     ImGui::SetNextItemWidth(w);
-    changed(ImGui::SliderFloat("##floor", &s.asphaltFloor, 0.0f, 5.0f, s.asphaltFloor > 0.0f ? "%.2f" : "off", ImGuiSliderFlags_AlwaysClamp));
+    changed(ImGui::SliderFloat("##floor", &e.asphaltFloor, 0.0f, 5.0f, e.asphaltFloor > 0.0f ? "%.2f" : "off", ImGuiSliderFlags_AlwaysClamp));
     PageTip("Every tire grips at least this much on paved ground, as if its tire file said so; the modes act on top. "
             "Vanilla off-road and mud tires have 0.4 to 1.2, highway tires about 3.");
 
     ImGui::SeparatorText("Pressure modes, against Normal");
-    changed(ImGui::Checkbox("Increased pressure mode", &s.increased));
+    changed(ImGui::Checkbox("Increased pressure mode", &e.increased));
     PageTip("A road mode above Normal: more grip on asphalt, less on dirt and in mud, less fuel, quicker steering.");
     // the columns in pressure order; TpSettings::mode holds Reduced, Low, Increased
     static const struct { const char *name; int index; } columns[3] = { { "Low", 1 }, { "Reduced", 0 }, { "Increased", 2 } };
@@ -166,25 +195,25 @@ static int SettingsPage(TpSettings &s, const TpLive &live, PageState &st, uint32
                 const int m = columns[c].index;
                 ImGui::TableNextColumn();
                 ImGui::PushID(r * 3 + c);
-                ImGui::BeginDisabled(m == 2 && !s.increased);
+                ImGui::BeginDisabled(m == 2 && !e.increased);
                 ImGui::SetNextItemWidth(-FLT_MIN);
-                changed(ImGui::DragFloat("##v", &s.mode[m][k], rows[r].speed, kModeRange[k].lo, kModeRange[k].hi, rows[r].format, ImGuiSliderFlags_AlwaysClamp));
+                changed(ImGui::DragFloat("##v", &e.mode[m][k], rows[r].speed, kModeRange[k].lo, kModeRange[k].hi, rows[r].format, ImGuiSliderFlags_AlwaysClamp));
                 ImGui::EndDisabled();
                 ImGui::PopID();
             }
         }
         ImGui::EndTable();
     }
-    changed(ImGui::Checkbox("Flattened tires roll like real ones", &s.rollingRadius));
+    changed(ImGui::Checkbox("Flattened tires roll like real ones", &e.rollingRadius));
     PageTip("A real tire's belt keeps its length, so a flattened tire rolls nearly as far per turn as before. In the game the "
             "wheel itself shrinks, which takes about three times as much speed off the truck. With this on the gears make up "
             "the difference.");
 
     ImGui::SeparatorText("Tire damage at speed");
-    changed(ImGui::Checkbox("Soft tires wear when driven fast", &s.tireDamage));
+    changed(ImGui::Checkbox("Soft tires wear when driven fast", &e.tireDamage));
     PageTip("Faster than the first speed, every wheel on the ground takes damage each time the interval passes, more "
             "the faster, up to the second speed. A worn out tire goes flat and has no grip until it is repaired. A wheel takes about 50.");
-    ImGui::BeginDisabled(!s.tireDamage);
+    ImGui::BeginDisabled(!e.tireDamage);
     if (ImGui::BeginTable("wear", 3, ImGuiTableFlags_SizingFixedFit))
     {
         ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, labelX - ImGui::GetStyle().CellPadding.x * 2.0f);
@@ -208,14 +237,14 @@ static int SettingsPage(TpSettings &s, const TpLive &live, PageState &st, uint32
             for (int c = 0; c < 2; c++)
             {
                 const int m = columns[c].index;
-                float shown = s.mode[m][k] * rows[r].scale;
+                float shown = e.mode[m][k] * rows[r].scale;
                 ImGui::TableNextColumn();
                 ImGui::PushID(100 + r * 2 + c);
                 ImGui::SetNextItemWidth(-FLT_MIN);
                 if (ImGui::DragFloat("##w", &shown, rows[r].speed, kModeRange[k].lo * rows[r].scale, kModeRange[k].hi * rows[r].scale, rows[r].format, ImGuiSliderFlags_AlwaysClamp))
                 {
                     // whole numbers for the damages and the interval, as the game counts damage in whole points
-                    s.mode[m][k] = rows[r].scale == 1.0f ? floorf(shown + 0.5f) : shown / rows[r].scale;
+                    e.mode[m][k] = rows[r].scale == 1.0f ? floorf(shown + 0.5f) : shown / rows[r].scale;
                     act |= kPageChanged;
                 }
                 ImGui::PopID();
@@ -224,6 +253,7 @@ static int SettingsPage(TpSettings &s, const TpLive &live, PageState &st, uint32
         ImGui::EndTable();
     }
     ImGui::EndDisabled();
+    ImGui::EndDisabled(); // hard mode
 
     ImGui::SeparatorText("Controls");
     PageLabel("Panel key", labelX);
@@ -254,8 +284,10 @@ static int SettingsPage(TpSettings &s, const TpLive &live, PageState &st, uint32
     ImGui::EndDisabled();
     PageLabel("Change takes", labelX);
     ImGui::SetNextItemWidth(w);
-    changed(ImGui::SliderFloat("##seconds", &s.seconds, 0.0f, 30.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp));
-    PageTip("How long the tires take to deflate or inflate to the new pressure.");
+    ImGui::BeginDisabled(s.hardMode);
+    changed(ImGui::SliderFloat("##seconds", &e.seconds, 0.0f, 30.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp));
+    PageTip("How long the tires take from Normal to Low; a smaller step takes its share.");
+    ImGui::EndDisabled();
     PageLabel("Sound volume", labelX);
     ImGui::SetNextItemWidth(w);
     changed(ImGui::SliderFloat("##sound", &s.soundVolume, 0.0f, 100.0f, s.soundVolume > 0.0f ? "%.0f %%" : "off", ImGuiSliderFlags_AlwaysClamp));

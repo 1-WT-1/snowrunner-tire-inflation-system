@@ -28,6 +28,7 @@
 #include "marker.h"
 #include "build_find.h"
 #include "sound.h"
+#include "outside.h"
 
 // Where the few places lie that are elsewhere in every build of the game's exe (build_find.h has what each is). Run
 // looks for them in the running exe at the start and stands down when it does not find every one.
@@ -86,6 +87,14 @@ struct Stock { float body, asphalt, substance, cylinder; Mode written; float wri
 static std::unordered_map<uint64_t, Stock> g_wheels; // wheel object -> its stock values and the factors written to it
 static float g_deepest = 0.0f; // the largest AdditionalRadiusOffset among the modes
 static bool g_rollingRadius = true; // ini RollingRadius (RollFactor)
+static bool g_standStill = true;    // ini StandStill: a pressure change only goes on while the truck stands still
+static bool g_temperature = true;   // ini Temperature: the tires feel the outside temperature (outside.h)
+static float g_ambientC = 15.0f;    // ini AmbientC: the outside temperature where no other mod publishes one
+static bool g_hardMode = false;     // ini HardMode: the realistic numbers and options in force (HardSettings)
+static float g_pressure = kModePressure[kNormal]; // the tires' pressure as a share of Normal's, on its way to the chosen mode's
+static OutsideReader g_outside = {};
+static float g_outsideC = 15.0f;    // the outside temperature in force
+static bool g_outsideFromMod = false; // it comes from another mod's block
 static std::wstring g_dir;
 static uint64_t g_base = 0;
 static int g_mode = kNormal;
@@ -177,6 +186,10 @@ static void WriteIni(const TpSettings &s)
     put(T, L"Increased", L"%.0f", s.increased ? 1 : 0);
     put(T, L"TireDamage", L"%.0f", s.tireDamage ? 1 : 0);
     put(T, L"RollingRadius", L"%.0f", s.rollingRadius ? 1 : 0);
+    put(T, L"StandStill", L"%.0f", s.standStill ? 1 : 0);
+    put(T, L"Temperature", L"%.0f", s.temperature ? 1 : 0);
+    put(T, L"AmbientC", L"%g", s.ambientC);
+    put(T, L"HardMode", L"%.0f", s.hardMode ? 1 : 0);
     for (int m = 0; m < 3; m++)
         for (int k = 0; k < kModeKeyCount; k++) put(kModeSections[m], Wide(kModeKeys[k]), L"%g", s.mode[m][k]);
 }
@@ -217,7 +230,11 @@ static void ReadIni(TpSettings &s)
                         L"; the speed a real tire loses; the gears make up the difference. 0 = the smaller wheel as it is.\n"
                         L"; TireDamage=1: faster than MinVel (metres per second; 10 = 36 km/h) the tires wear: every DamageTick\n"
                         L"; seconds each wheel on the ground takes MinDamage, rising to MaxDamage at MaxVel. A wheel takes about\n"
-                        L"; 50 before the tire is flat. MaxDamage=0 or TireDamage=0: none.\n");
+                        L"; 50 before the tire is flat. MaxDamage=0 or TireDamage=0: none.\n"
+                        L"; StandStill=1: a pressure change only goes on while the truck stands still. Temperature=1: the tires feel\n"
+                        L"; the outside temperature (AmbientC, or a gauge mod's by map and hour while it runs): cold air is less\n"
+                        L"; pressure in them, cold rubber less grip. HardMode=1: the realistic numbers and options in place of the\n"
+                        L"; grip, mode and damage keys and Seconds; the keys here keep your own.\n");
             fclose(f);
             WriteIni(s);
             for (const SoundVoiceKind &v : kSoundVoices) WritePrivateProfileStringW(L"TirePressure", v.key, L"", ini.c_str());
@@ -273,14 +290,21 @@ static void ReadIni(TpSettings &s)
     s.increased = GetPrivateProfileIntW(T, L"Increased", s.increased ? 1 : 0, ini.c_str()) != 0;
     s.tireDamage = GetPrivateProfileIntW(T, L"TireDamage", s.tireDamage ? 1 : 0, ini.c_str()) != 0;
     s.rollingRadius = GetPrivateProfileIntW(T, L"RollingRadius", s.rollingRadius ? 1 : 0, ini.c_str()) != 0;
+    s.standStill = GetPrivateProfileIntW(T, L"StandStill", s.standStill ? 1 : 0, ini.c_str()) != 0;
+    s.temperature = GetPrivateProfileIntW(T, L"Temperature", s.temperature ? 1 : 0, ini.c_str()) != 0;
+    s.ambientC = min(50.0f, max(-40.0f, IniFloat(T, L"AmbientC", s.ambientC, ini)));
+    s.hardMode = GetPrivateProfileIntW(T, L"HardMode", s.hardMode ? 1 : 0, ini.c_str()) != 0;
     for (int m = 0; m < 3; m++)
         for (int k = 0; k < kModeKeyCount; k++)
             s.mode[m][k] = min(kModeRange[k].hi, max(kModeRange[k].lo, IniFloat(kModeSections[m], Wide(kModeKeys[k]), s.mode[m][k], ini)));
 }
 
 // Puts settings in force: the key, the panel, the pad bindings, the modes with the base grip in them.
-static void ApplySettings(const TpSettings &s, bool log)
+static void ApplySettings(const TpSettings &in, bool log)
 {
+    // hard mode: the realistic numbers and options in place of the player's own, which the ini keeps
+    TpSettings s = in;
+    if (in.hardMode) HardSettings(s);
     g_modeCount = s.increased ? 4 : 3;
     g_view.count = g_modeCount;
     g_asphaltFloor = s.asphaltFloor;
@@ -354,6 +378,14 @@ static void ApplySettings(const TpSettings &s, bool log)
     if (log && s.asphaltFloor > 0.0f) Log(L"asphalt floor %g", s.asphaltFloor);
     if (log) Log(L"rolling radius: %s", s.rollingRadius ? L"the gears make up for the flattened wheels, but for what a real tire loses" : L"off, the smaller wheel as it is");
     if (log) Log(L"modes: Low, Reduced, Normal%s", s.increased ? L", Increased" : L"");
+    g_standStill = s.standStill;
+    g_temperature = s.temperature;
+    g_ambientC = s.ambientC;
+    g_hardMode = in.hardMode;
+    if (log && in.hardMode) Log(L"hard mode: the realistic numbers and options are in force (the ini keeps your own)");
+    if (log)
+        Log(L"a pressure change %s; the tires %s the outside temperature (AmbientC %g C where no other mod publishes one)",
+            s.standStill ? L"only goes on while the truck stands still" : L"goes on while driving too", s.temperature ? L"feel" : L"do not feel", s.ambientC);
 }
 
 void SettingsGet(TpSettings &out)
@@ -755,29 +787,48 @@ static void ApplyVehicle(uint64_t vehicle, size_t wheelCount, const Mode &m, boo
     }
 }
 
-// Moves factors one step of dt seconds towards a mode's; true once they are there.
-static bool StepTowards(Mode &now, const Mode &to, float dt)
+// The factors at a pressure (a share of Normal's): the modes' numbers, straight between two neighbouring modes on
+// the pressure scale (kModePressure); beyond the ends the last slope goes on for half a step and stops. Each factor
+// is held to its range, as the ini's are. The name is the chosen mode's.
+static Mode FactorsAt(float pressure)
 {
-    bool there = true;
-    auto step = [&](float &v, float target, float span) {
-        const float d = g_seconds > 0.0f ? span * dt / g_seconds : span;
-        if (fabsf(target - v) <= d || d <= 0.0f) v = target;
-        else { v += target > v ? d : -d; there = false; }
+    int i = 0;
+    while (i < kModeCount - 2 && pressure > kModePressure[i + 1]) i++;
+    const float t = min(1.5f, max(-0.5f, (pressure - kModePressure[i]) / (kModePressure[i + 1] - kModePressure[i])));
+    const Mode &a = g_modes[i], &b = g_modes[i + 1];
+    Mode m = g_modes[g_mode];
+    auto at = [&](float x, float y, int key) {
+        const float v = t == 0.0f ? x : t == 1.0f ? y : x + (y - x) * t;
+        return min(kModeRange[key].hi, max(kModeRange[key].lo, v));
     };
-    // span: Normal <-> Low (or Increased, if that is further) takes Seconds, a smaller change takes its share of that
-    const Mode &n = g_modes[kNormal], &l = g_modes[kLow], &h = g_modes[kIncreased];
-    auto span = [](float normal, float low, float high, float least) { return max(least, max(fabsf(low - normal), fabsf(high - normal))); };
-    step(now.body, to.body, span(n.body, l.body, h.body, 0.01f));
-    step(now.asphalt, to.asphalt, span(n.asphalt, l.asphalt, h.asphalt, 0.01f));
-    step(now.substance, to.substance, span(n.substance, l.substance, h.substance, 0.01f));
-    step(now.radiusOffset, to.radiusOffset, span(n.radiusOffset, l.radiusOffset, h.radiusOffset, 0.001f));
-    step(now.fuel, to.fuel, span(n.fuel, l.fuel, h.fuel, 0.01f));
-    step(now.steering, to.steering, span(n.steering, l.steering, h.steering, 0.01f));
-    step(now.gravel, to.gravel, span(n.gravel, l.gravel, h.gravel, 0.01f));
-    step(now.sand, to.sand, span(n.sand, l.sand, h.sand, 0.01f));
-    step(now.rock, to.rock, span(n.rock, l.rock, h.rock, 0.01f));
-    if (there) now = to;
-    return there;
+    m.body = at(a.body, b.body, kModeGround);
+    m.asphalt = at(a.asphalt, b.asphalt, kModeAsphalt);
+    m.substance = at(a.substance, b.substance, kModeMud);
+    m.radiusOffset = at(a.radiusOffset, b.radiusOffset, kModeOffset);
+    m.fuel = at(a.fuel, b.fuel, kModeFuel);
+    m.steering = at(a.steering, b.steering, kModeSteering);
+    m.gravel = at(a.gravel, b.gravel, kModeGravel);
+    m.sand = at(a.sand, b.sand, kModeSand);
+    m.rock = at(a.rock, b.rock, kModeRock);
+    return m;
+}
+
+// Where a pressure stands counted in modes: Low 0, Reduced 1, Normal 2, Increased 3, a half between two (for the
+// sounds and the tank; the slope goes on beyond the ends).
+static float PressureInModes(float pressure)
+{
+    int i = 0;
+    while (i < kModeCount - 2 && pressure > kModePressure[i + 1]) i++;
+    return (float)i + (pressure - kModePressure[i]) / (kModePressure[i + 1] - kModePressure[i]);
+}
+
+// Moves the tires' pressure one step of dt seconds towards a mode's: Normal to Low takes Seconds, every step goes at
+// the same pace (Seconds=0: at once).
+static void PressureStep(float &pressure, float to, float dt)
+{
+    const float d = g_seconds > 0.0f ? (kModePressure[kNormal] - kModePressure[kLow]) * dt / g_seconds : 1.0e9f;
+    if (fabsf(to - pressure) <= d) pressure = to;
+    else pressure += to > pressure ? d : -d;
 }
 
 static const float kPass = 0.05f; // the main loop's step in seconds
@@ -807,16 +858,11 @@ static bool TankStep(AirTank &t, float raised, float dt)
     return true;
 }
 
-// Moves the factors in force one pass towards the chosen mode; true once they are there.
-static bool StepTowardsMode() { return StepTowards(g_now, g_modes[g_mode], kPass); }
-
-// How long the factors in force take to the chosen mode, in seconds of passes; 0: they are there, or get there in one.
-static float SecondsToMode()
+// How long the tires' pressure takes to the chosen mode's, in seconds; 0: it is there, or gets there at once (the
+// offline test checks it against the passes).
+[[maybe_unused]] static float SecondsToMode()
 {
-    Mode now = g_now;
-    int passes = 1;
-    while (passes < 100000 && !StepTowards(now, g_modes[g_mode], kPass)) passes++;
-    return passes > 1 ? (float)passes * kPass : 0.0f;
+    return g_seconds > 0.0f ? fabsf(kModePressure[g_mode] - g_pressure) / (kModePressure[kNormal] - kModePressure[kLow]) * g_seconds : 0.0f;
 }
 
 static bool SameFactors(const Mode &a, const Mode &b)
@@ -1373,7 +1419,7 @@ static DWORD WINAPI Run(void *)
         Log(L"the game's truck update is not where the mod knows it, so tire damage will be dealt from the mod's own thread. Not as the mod knows it: %s", missing.c_str());
     LoadIni();
     if (!SoundStart(g_dir)) Log(L"sound: none, as its thread did not start");
-    g_now = g_modes[g_mode]; // with a base grip, Normal is not the stock values: the first wheels get it straight away
+    g_now = FactorsAt(g_pressure); // with a base grip, Normal is not the stock values: the first wheels get it straight away
     Log(L"panel: %s", g_ui ? L"drawn through ReShade's overlay" : g_uiWanted ? L"ReShade not found: the key cycles the modes directly" : L"off (UI=0): the key cycles the modes directly");
     if (g_reshadeOk) Log(L"settings: the Tire Inflation System tab in ReShade's overlay");
     bool down = false, chainSeen = false, moving = false, panelOpen = false;
@@ -1435,10 +1481,9 @@ static DWORD WINAPI Run(void *)
         }
         if (edited)
         {
-            // Increased switched off while in force: back to Normal
+            // Increased switched off while in force: back to Normal. An edited factor counts at once: the factors in
+            // force follow the pressure and the settings every pass.
             if (g_mode >= g_modeCount) { g_mode = kNormal; Log(L"mode Normal (Increased is off now)"); }
-            const Mode &to = g_modes[g_mode];
-            if (!SameFactors(to, g_now)) moving = true;
         }
         const bool front = GameInFront();
         const bool now = front && (GetAsyncKeyState(g_key) & 0x8000);
@@ -1600,45 +1645,75 @@ static DWORD WINAPI Run(void *)
             moving = true;
         }
         g_view.current = g_mode;
-        // The sounds of a change (sound.h): air let out on the way down, air going in on the way up. Where the pressure
-        // stands is counted in modes (kLow = 0, a half = between two of them) and moves with the factors, so a choice
-        // changed half way still knows which way it goes.
+        // The tires' pressure (kModePressure, a share of Normal's) moves to the chosen mode's at Seconds' pace: Normal
+        // to Low in Seconds, a smaller step in its share. With StandStill it only moves while the truck stands. The
+        // factors in force follow the pressure (FactorsAt), and the outside temperature works on both (outside.h):
+        // cold air is less pressure in the tires, cold rubber is less grip. The sounds (sound.h) go with the change,
+        // air let out on the way down, air going in on the way up; for them and for the tank the pressure is also
+        // counted in modes (kLow = 0, a half = between two), so a choice changed half way still knows which way it goes.
         static int soundMode = kNormal, changing = 0; // changing: -1 the pressure falls, 1 it rises, 0 neither
-        static float pressure = (float)kNormal, pressureFrom = (float)kNormal, changeFor = 0.0f, changeTakes = 0.0f;
+        static float pressureFrom = kModePressure[kNormal];
+        static bool standing = true; // the truck stands still (set further down, from its speed)
+        const float wantPressure = kModePressure[g_mode];
         if (g_mode != soundMode)
         {
             soundMode = g_mode;
-            pressureFrom = pressure;
-            changeFor = 0.0f;
-            changeTakes = SecondsToMode();
-            changing = changeTakes <= 0.0f ? 0 : (float)g_mode > pressure + 0.01f ? 1 : (float)g_mode < pressure - 0.01f ? -1 : 0;
+            pressureFrom = g_pressure;
+            changing = wantPressure > g_pressure + 0.0001f ? 1 : wantPressure < g_pressure - 0.0001f ? -1 : 0;
         }
-        const bool arrived = moving && StepTowardsMode();
+        const bool held = g_standStill && !standing && g_pressure != wantPressure && !wheels.empty();
+        const float pressureWas = g_pressure;
+        if (!held) PressureStep(g_pressure, wantPressure, kPass);
+        const bool stepped = g_pressure != pressureWas;
+        const bool arrived = moving && g_pressure == wantPressure;
+        moving = g_pressure != wantPressure;
+        g_view.hold = held ? 1 : 0;
         float soundProgress = 1.0f;
-        if (moving && !arrived && changing)
+        if (changing && moving)
         {
-            changeFor += kPass;
-            soundProgress = min(1.0f, changeFor / changeTakes);
+            const float whole = fabsf(wantPressure - pressureFrom);
+            soundProgress = whole > 0.0001f ? min(1.0f, fabsf(g_pressure - pressureFrom) / whole) : 1.0f;
         }
         else changing = 0;
-        const float pressureWas = pressure;
-        pressure = pressureFrom + ((float)g_mode - pressureFrom) * soundProgress;
+        const float modesNow = PressureInModes(g_pressure), modesWas = PressureInModes(pressureWas);
         // The air that went into the tires came out of the tank; the compressor runs when the tank says so, and as
         // it stops it lets its air go. All of it is heard while a truck is driven and the game is in front.
         static AirTank tank;
         static LONG purges = 0;
         const bool heard = front && !wheels.empty();
-        if (TankStep(tank, max(0.0f, pressure - pressureWas), kPass) && heard) purges++;
+        if (TankStep(tank, max(0.0f, modesNow - modesWas), kPass) && heard) purges++;
         SoundWant want = {};
         want.volume = g_soundVolume;
-        want.on[kVoiceHiss] = heard && changing < 0;
-        want.on[kVoiceAir] = heard && changing > 0;
+        want.on[kVoiceHiss] = heard && changing < 0 && stepped;
+        want.on[kVoiceAir] = heard && changing > 0 && stepped;
         want.on[kVoiceCompressor] = heard && tank.compressor;
-        want.progress[kVoiceHiss] = min(1.0f, max(-0.5f, ((float)kNormal - pressure) / 2.0f)); // how empty the tires are
+        want.progress[kVoiceHiss] = min(1.0f, max(-0.5f, ((float)kNormal - modesNow) / 2.0f)); // how empty the tires are
         want.progress[kVoiceAir] = soundProgress;
         want.progress[kVoiceCompressor] = min(1.0f, max(0.0f, (tank.level - 0.3f) / 0.7f));
         want.shots[kVoicePurge] = purges;
         SoundSet(want);
+        // the outside temperature: another mod's block while it is there and fresh, else AmbientC
+        {
+            float c = 0.0f;
+            const bool fromMod = OutsideRead(g_outside, GetTickCount64(), c);
+            if (fromMod != g_outsideFromMod)
+                Log(fromMod ? L"outside temperature: %.1f C from another mod's block" : L"outside temperature: AmbientC %g C (no other mod publishes one)", fromMod ? c : g_ambientC);
+            g_outsideFromMod = fromMod;
+            g_outsideC = fromMod ? c : g_ambientC;
+        }
+        // the factors in force, by the pressure and the temperature (taken in half degrees, so a drifting temperature
+        // does not rewrite the wheels every pass)
+        const TempEffect te = TempEffectAt(g_temperature ? floorf(g_outsideC * 2.0f + 0.5f) / 2.0f : kTempRef);
+        const float pressureAir = TempPressure(g_pressure, te);
+        Mode target = FactorsAt(pressureAir);
+        target.body *= te.soft;
+        target.gravel *= te.soft;
+        target.sand *= te.soft;
+        target.substance *= te.soft;
+        target.asphalt *= te.hard;
+        target.rock *= te.hard;
+        const bool drifted = !moving && !SameFactors(target, g_now); // the factors moved without a change of mode (the temperature)
+        g_now = target;
         // vanilla balance: a factor per wheel from its tire's own grip, once all three are known (the ground grip list
         // only fills when the truck works); the modes and the base grip then act on the balanced tire
         std::vector<float> balance(wheels.size(), 1.0f);
@@ -1665,7 +1740,7 @@ static DWORD WINAPI Run(void *)
             Mode m = g_now;
             m.asphalt *= paved;
             m.substance *= balance[i];
-            ApplyWheel(wheels[i], m, !moving, arrived);
+            ApplyWheel(wheels[i], m, !moving && !drifted, arrived);
         }
         // the truck's speed: the fuel factor only counts while it moves (Expeditions' fuel rate, RVA 0xe168a0 in its
         // exe, takes the modifier in above a speed), and soft tires wear when it is too fast for them
@@ -1687,6 +1762,7 @@ static DWORD WINAPI Run(void *)
         memcpy(lastPos, pos, sizeof pos);
         still = moved < 0.00001f ? still + 1 : 0;
         if (still >= 4) speed = 0.0f;
+        standing = !speedOk || speed < 0.3f; // about 1 km/h: a pressure change goes on (StandStill)
         if (vehicle != speedVehicle)
         {
             speedVehicle = vehicle;
@@ -1722,14 +1798,15 @@ static DWORD WINAPI Run(void *)
         }
         roll = g_rollingRadius && rolled ? roll / (float)rolled : 1.0f;
         if (vehicle) ApplyVehicle(vehicle, wheels.size(), forVehicle, arrived, groundFactor, roll);
-        if (arrived) moving = false;
         // tire damage at speed, as Expeditions does it (the check in its per-frame truck update, RVA 0xae1d8f there):
         // while the truck is faster than the mode's MinVel a timer runs, and each time it passes DamageTick the wheels
         // on the ground take damage; slowing down starts the wait again. Expeditions looks every frame; this looks 20
         // times a second from outside the game's frame, so the wait only starts again after a full second below the
         // speed (a single missed reading must not cost seven seconds).
         static float slowFor = 0.0f;
-        const Tick &tk = g_ticks[g_mode];
+        Tick tk = g_ticks[g_mode];
+        tk.minVel *= te.speed; // in the heat soft tires wear from lower speeds, in the cold from higher ones
+        tk.maxVel *= te.speed;
         const bool tooFast = g_tireDamage && speedOk && tk.maxDamage > 0 && tk.minVel > 0.0001f && speed > tk.minVel;
         g_view.warn = tooFast ? 1 : 0;
         if (tooFast)
@@ -1886,6 +1963,10 @@ static DWORD WINAPI Run(void *)
                 const auto wi = g_wheels.find(wheels[0].wheel);
                 if (wi != g_wheels.end()) live.room = wi->second.room;
             }
+            live.outsideC = g_outsideC;
+            live.outsideFrom = g_outsideFromMod ? 1 : 0;
+            live.pressure = g_pressure;
+            live.pressureAir = pressureAir;
             AcquireSRWLockExclusive(&g_setLock);
             g_live = live;
             ReleaseSRWLockExclusive(&g_setLock);
@@ -1936,7 +2017,8 @@ static DWORD WINAPI TestWriter(void *stop)
 static bool SameSettings(const TpSettings &a, const TpSettings &b)
 {
     bool same = a.key == b.key && a.beep == b.beep && a.seconds == b.seconds && a.soundVolume == b.soundVolume && a.ui == b.ui && a.uiScale == b.uiScale &&
-                a.confirmSeconds == b.confirmSeconds && a.vanillaBalance == b.vanillaBalance && a.balanceStrength == b.balanceStrength;
+                a.confirmSeconds == b.confirmSeconds && a.vanillaBalance == b.vanillaBalance && a.balanceStrength == b.balanceStrength &&
+                a.standStill == b.standStill && a.temperature == b.temperature && a.ambientC == b.ambientC && a.hardMode == b.hardMode;
     for (int i = 0; i < 5; i++) same = same && !strcmp(a.pad[i], b.pad[i]);
     for (int i = 0; i < 3; i++) same = same && a.base[i] == b.base[i];
     same = same && a.asphaltFloor == b.asphaltFloor && a.increased == b.increased && a.tireDamage == b.tireDamage && a.rollingRadius == b.rollingRadius;
@@ -1980,6 +2062,10 @@ static bool IniTest(const wchar_t *userIni)
     c.increased = false;
     c.tireDamage = false;
     c.rollingRadius = false;
+    c.standStill = false;
+    c.temperature = false;
+    c.ambientC = -3.0f;
+    c.hardMode = true;
     int unchanged = 0;
     for (int m = 0; m < 3; m++)
         for (int k = 0; k < kModeKeyCount; k++)
@@ -1991,7 +2077,8 @@ static bool IniTest(const wchar_t *userIni)
     unchanged += c.key == d.key || c.seconds == d.seconds || c.soundVolume == d.soundVolume || c.uiScale == d.uiScale || c.confirmSeconds == d.confirmSeconds || c.base[0] == d.base[0] ||
                  c.base[1] == d.base[1] || c.base[2] == d.base[2] || c.balanceStrength == d.balanceStrength || c.asphaltFloor == d.asphaltFloor ||
                  c.beep == d.beep || c.ui == d.ui || c.vanillaBalance == d.vanillaBalance || c.increased == d.increased || c.tireDamage == d.tireDamage ||
-                 c.rollingRadius == d.rollingRadius;
+                 c.rollingRadius == d.rollingRadius || c.standStill == d.standStill || c.temperature == d.temperature || c.ambientC == d.ambientC ||
+                 c.hardMode == d.hardMode;
     WriteIni(c);
     ReadIni(b);
     wchar_t probe[16] = {};
@@ -2080,6 +2167,54 @@ static bool FlattenTest()
     printf("%s rolling radius: gear speeds x%.3f at stock, x%.3f at that Low (1.117 by hand): the truck keeps %.1f%% of its speed where the smaller wheel alone keeps %.1f%%\n",
            rolls ? "ok  " : "FAIL", atStock, atLow, speed * 100.0f, s.writtenCylinder / stock * 100.0f);
     return limits && shared && fits && rolls;
+}
+
+// The pressure scale and the outside temperature (panel.h, outside.h): at each mode's pressure the factors are the
+// mode's own, half way they are half way, below Low the slope goes on half a step and stops, above Increased the
+// same; a pressure counted in modes; the temperature's effects are 1 at 15 C and go the right way, with the gas law
+// on 35 psi (83 percent of Normal's pressure at 20 below); hard mode sets its options and numbers and nothing else.
+static bool RealismTest()
+{
+    TpSettings d;
+    SettingsDefaults(d);
+    ApplySettings(d, false);
+    auto alike = [](const Mode &a, const Mode &b) {
+        return fabsf(a.body - b.body) < 1e-5f && fabsf(a.asphalt - b.asphalt) < 1e-5f && fabsf(a.substance - b.substance) < 1e-5f && fabsf(a.radiusOffset - b.radiusOffset) < 1e-5f &&
+               fabsf(a.fuel - b.fuel) < 1e-5f && fabsf(a.steering - b.steering) < 1e-5f && fabsf(a.gravel - b.gravel) < 1e-5f && fabsf(a.sand - b.sand) < 1e-5f && fabsf(a.rock - b.rock) < 1e-5f;
+    };
+    bool at = true;
+    for (int m = kLow; m < kModeCount; m++) at = at && alike(FactorsAt(kModePressure[m]), g_modes[m]);
+    const Mode half = FactorsAt((kModePressure[kLow] + kModePressure[kReduced]) * 0.5f);
+    const bool between = fabsf(half.body - (g_modes[kLow].body + g_modes[kReduced].body) * 0.5f) < 1e-4f && fabsf(half.radiusOffset - 0.08f) < 1e-4f;
+    const Mode under = FactorsAt(0.1f), underHalf = FactorsAt(kModePressure[kLow] - (kModePressure[kReduced] - kModePressure[kLow]) * 0.5f);
+    const bool below = alike(under, underHalf) && under.body > g_modes[kLow].body && under.radiusOffset > g_modes[kLow].radiusOffset && under.asphalt < g_modes[kLow].asphalt;
+    const Mode over = FactorsAt(2.0f);
+    const bool above = over.asphalt > g_modes[kIncreased].asphalt && over.body < g_modes[kIncreased].body && over.body >= kModeRange[kModeGround].lo;
+    printf("%s realism: the factors at each mode's pressure are the mode's, half way between Low and Reduced the mean (dirt x%.2f, %.3f m), below Low the slope goes on half a step (dirt x%.2f, %.3f m) and stops\n",
+           at && between && below && above ? "ok  " : "FAIL", half.body, half.radiusOffset, under.body, under.radiusOffset);
+    const bool modes = fabsf(PressureInModes(kModePressure[kLow])) < 1e-5f && fabsf(PressureInModes(kModePressure[kNormal]) - 2.0f) < 1e-5f &&
+                       fabsf(PressureInModes((kModePressure[kReduced] + kModePressure[kNormal]) * 0.5f) - 1.5f) < 1e-5f;
+    const TempEffect mild = TempEffectAt(kTempRef), cold = TempEffectAt(-20.0f), hot = TempEffectAt(35.0f);
+    const float coldNormal = TempPressure(1.0f, cold), hotNormal = TempPressure(1.0f, hot);
+    const bool temps = mild.pressure == 1.0f && mild.hard == 1.0f && mild.soft == 1.0f && mild.speed == 1.0f && fabsf(coldNormal - 0.827f) < 0.005f && fabsf(hotNormal - 1.098f) < 0.005f &&
+                       cold.hard < cold.soft && cold.soft < 1.0f && cold.speed > 1.0f && hot.hard > 1.0f && hot.soft == 1.0f && hot.speed < 1.0f;
+    printf("%s realism: a pressure counted in modes (Low 0, Normal 2, half way 1.5); at 15 C nothing changes; at 20 below Normal holds %.0f%% of its pressure, hard ground grips x%.2f, soft x%.2f, wear from x%.2f the speed; at 35 above %.0f%%, asphalt x%.2f, wear from x%.2f\n",
+           modes && temps ? "ok  " : "FAIL", coldNormal * 100.0f, cold.hard, cold.soft, cold.speed, hotNormal * 100.0f, hot.hard, hot.speed);
+    TpSettings h = d;
+    h.key = 'K';
+    h.soundVolume = 12.0f;
+    h.ambientC = -5.0f;
+    h.standStill = h.temperature = h.tireDamage = h.vanillaBalance = h.increased = h.rollingRadius = false;
+    h.asphaltFloor = 2.0f;
+    HardSettings(h);
+    const bool hard = h.standStill && h.temperature && h.tireDamage && h.vanillaBalance && h.increased && h.rollingRadius && h.asphaltFloor == 0.0f && h.seconds == kHardSeconds &&
+                      h.key == 'K' && h.soundVolume == 12.0f && h.ambientC == -5.0f && h.mode[1][kModeGround] == kHardModes[1][kModeGround] && h.mode[1][kModeGround] < d.mode[1][kModeGround];
+    printf("%s realism: hard mode sets its options and numbers (Low dirt x%.2f, the default's x%.2f) and leaves the controls, the sounds and the outside temperature alone\n",
+           hard ? "ok  " : "FAIL", h.mode[1][kModeGround], d.mode[1][kModeGround]);
+    g_mode = kNormal;
+    g_pressure = kModePressure[kNormal];
+    g_now = FactorsAt(g_pressure);
+    return at && between && below && above && modes && temps && hard;
 }
 
 // An exe from a file, as the loader lays it out: a copy of the image from a running game is that already (file offset
@@ -2380,25 +2515,26 @@ static bool SoundTest()
     printf("%s sound: the compressor starts in filling %d of two modes each and runs %.0f s, in filling %d of one mode each and runs %.0f s\n", tank ? "ok  " : "FAIL",
            two, ranTwo, one, ranOne);
     // the time a change is said to take against the passes it takes (the defaults: Normal to Low all of Seconds,
-    // Normal to Reduced four fifths of it, as the dirt grip has that far to go)
+    // Normal to Reduced its share of the pressure scale, about two thirds)
     TpSettings d;
     SettingsDefaults(d);
     ApplySettings(d, false);
     bool times = true;
     float said[2] = {};
     static const int to[2] = { kLow, kReduced };
+    const float shareReduced = (kModePressure[kNormal] - kModePressure[kReduced]) / (kModePressure[kNormal] - kModePressure[kLow]);
     for (int i = 0; i < 2; i++)
     {
-        g_mode = kNormal;
-        g_now = g_modes[kNormal];
         g_mode = to[i];
+        g_pressure = kModePressure[kNormal];
         said[i] = SecondsToMode();
-        int passes = 1;
-        while (passes < 100000 && !StepTowardsMode()) passes++;
-        times = times && fabsf(said[i] - (float)passes * kPass) < 0.001f && fabsf(said[i] - d.seconds * (i ? 0.8f : 1.0f)) < 0.11f && SecondsToMode() == 0.0f;
+        int passes = 0;
+        while (passes < 100000 && g_pressure != kModePressure[g_mode]) { PressureStep(g_pressure, kModePressure[g_mode], kPass); passes++; }
+        times = times && fabsf(said[i] - (float)passes * kPass) < 0.06f && fabsf(said[i] - d.seconds * (i ? shareReduced : 1.0f)) < 0.01f && SecondsToMode() == 0.0f;
     }
     g_mode = kNormal;
-    g_now = g_modes[kNormal];
+    g_pressure = kModePressure[kNormal];
+    g_now = FactorsAt(g_pressure);
     printf("%s sound: a change is said to take as long as it does (Normal to Low %.2f s, to Reduced %.2f s, at Seconds=%g)\n", times ? "ok  " : "FAIL", said[0], said[1], d.seconds);
     return plain && adpcm && paks && refused && mark && own && loops && shapes && tank && times;
 }
@@ -2477,6 +2613,7 @@ int wmain(int argc, wchar_t **argv)
     if (argc > 2 && !wcscmp(argv[1], L"loops")) return SoundLoops(argc, argv);
     if (!IniTest(argc > 1 ? argv[1] : nullptr)) return 1;
     if (!FlattenTest()) return 1;
+    if (!RealismTest()) return 1;
     if (!SoundTest()) return 1;
     wchar_t imageFile[1024] = {};
     GetEnvironmentVariableW(L"SR_IMAGE", imageFile, 1024);
