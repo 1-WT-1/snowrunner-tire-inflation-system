@@ -624,13 +624,25 @@ static bool ApplyWornWheel(const WheelRef &w)
         it = g_wheels.insert_or_assign(w.wheel, Stock{ 0.0f, asphalt, substance, radius - offset, kStockMode, cylinder, max(0.0f, FlattenLimit(radius) - offset), radius }).first;
     }
     Stock &s = it->second;
-    if (s.worn) return false;
-    if (!StillThere(w) || !Write(w.wheel + 0xA4, 0.0f)) return false;
-    s.written.asphalt = 0.0f;
-    if (!Write(w.wheel + 0xA0, 0.0f)) return false;
-    s.written.substance = 0.0f;
+    // and drawn flat: the game's break leaves the wheel round at its broken radius (+0x94, the cylinder the same), so
+    // the cylinder goes down by as much as the game's shader draws a tire flat (FlattenLimit), at least 0.4 of the
+    // radius as the modes keep it; written again when the game builds the broken shape anew
+    float broken = 0.0f;
+    if (!Read(w.wheel + 0x94, broken) || !(broken > 0.03f && broken < 5.0f)) return false;
+    const float flat = max(broken * 0.4f, broken - FlattenLimit(broken));
+    if (s.worn && Near(cylinder, s.writtenCylinder)) return false;
+    if (!StillThere(w)) return false;
+    if (!s.worn)
+    {
+        if (!Write(w.wheel + 0xA4, 0.0f)) return false;
+        s.written.asphalt = 0.0f;
+        if (!Write(w.wheel + 0xA0, 0.0f)) return false;
+        s.written.substance = 0.0f;
+    }
+    if (!Write(w.shape + 0x28, flat)) return false;
+    s.writtenCylinder = flat;
+    if (!s.worn) Log(L"wheel %p worn out: no grip until it is repaired (its own asphalt %.3f, mud %.3f), drawn flat (cylinder %.4f at a radius of %.4f)", (void *)w.wheel, s.asphalt, s.substance, flat, broken);
     s.worn = true;
-    Log(L"wheel %p worn out: no grip until it is repaired (its own asphalt %.3f, mud %.3f)", (void *)w.wheel, s.asphalt, s.substance);
     return true;
 }
 
@@ -1792,7 +1804,7 @@ static DWORD WINAPI Run(void *)
         for (const WheelRef &w : wheels)
         {
             const auto wi = g_wheels.find(w.wheel);
-            if (wi == g_wheels.end()) continue;
+            if (wi == g_wheels.end() || wi->second.worn) continue; // a worn out tire's flat cylinder is no reason for faster gears
             roll += RollFactor(wi->second);
             rolled++;
         }

@@ -7,10 +7,7 @@
 - Hard mode, `HardMode`: the numbers and options nearest to real tires, all at once, with every other gameplay setting greyed out in the tab while it is on. `TirePressure.ini` keeps your own numbers.
 - The pressure moves between the modes on one scale (Low 45%, Reduced 65%, Normal 100%, Increased 125% of Normal's) at one pace: Normal to Low in `Seconds`, Normal to Reduced in about two thirds of that (1.1: four fifths), a step to Increased in a little under half.
 - A factor edited in the tab counts at once (1.1: the tires walked to it over `Seconds`).
-
-## [1.1.1]
-
-- A worn out tire has no grip until it is repaired: 0 on the ground, on asphalt and in mud. Before, a flat tire kept its pressure mode's grip.
+- A worn out tire has no grip until it is repaired: 0 on the ground, on asphalt and in mud, and it is drawn flat, as flat as the game draws a tire. Before, a flat tire kept its pressure mode's grip and stayed round at its smaller size.
 - The mod runs on a build of the game where it finds everything but the game's damage update or the truck update's call into Windows. Tire damage is then dealt from the mod's own thread, and the log says so. Before, the mod stood down on such a build. The six checks of the game's objects count when found anywhere, not only once.
 
 ## [1.1.0] 2026-10-07
