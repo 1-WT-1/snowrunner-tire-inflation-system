@@ -87,7 +87,8 @@ inline bool OutsideRead(OutsideReader &r, unsigned long long now, float &c)
         }
     }
     OutsideBlock b;
-    if (!r.block || !OutsideCopy(r.block, b) || now - b.tick > kOutsideStaleMs || !(b.ambientC > -90.0f && b.ambientC < 90.0f)) return false;
+    // (a block written a moment after `now` was taken is fresh, so the difference is signed)
+    if (!r.block || !OutsideCopy(r.block, b) || (long long)(now - b.tick) > (long long)kOutsideStaleMs || !(b.ambientC > -90.0f && b.ambientC < 90.0f)) return false;
     c = b.ambientC;
     return true;
 }
