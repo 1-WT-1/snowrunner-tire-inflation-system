@@ -29,6 +29,7 @@
 #include "build_find.h"
 #include "sound.h"
 #include "outside.h"
+#include "tire_state.h"
 
 // Where the few places lie that are elsewhere in every build of the game's exe (build_find.h has what each is). Run
 // looks for them in the running exe at the start and stands down when it does not find every one.
@@ -93,6 +94,7 @@ static float g_ambientC = 15.0f;    // ini AmbientC: the outside temperature whe
 static bool g_hardMode = false;     // ini HardMode: the realistic numbers and options in force (HardSettings)
 static float g_pressure = kModePressure[kNormal]; // the tires' pressure as a share of Normal's, on its way to the chosen mode's
 static OutsideReader g_outside = {};
+static TireStateWriter g_state = {}; // the mod's state for other mods (tire_state.h)
 static float g_outsideC = 15.0f;    // the outside temperature in force
 static bool g_outsideFromMod = false; // it comes from another mod's block
 static std::wstring g_dir;
@@ -1430,6 +1432,8 @@ static DWORD WINAPI Run(void *)
     if (!missing.empty())
         Log(L"the game's truck update is not where the mod knows it, so tire damage will be dealt from the mod's own thread. Not as the mod knows it: %s", missing.c_str());
     LoadIni();
+    if (TireStateOpen(g_state)) Log(L"state published for other mods in Local\\SnowRunnerTirePressure.State.%lu (tire_state.h)", GetCurrentProcessId());
+    else Log(L"state for other mods: not published (the shared memory could not be made)");
     if (!SoundStart(g_dir)) Log(L"sound: none, as its thread did not start");
     g_now = FactorsAt(g_pressure); // with a base grip, Normal is not the stock values: the first wheels get it straight away
     Log(L"panel: %s", g_ui ? L"drawn through ReShade's overlay" : g_uiWanted ? L"ReShade not found: the key cycles the modes directly" : L"off (UI=0): the key cycles the modes directly");
@@ -1821,17 +1825,18 @@ static DWORD WINAPI Run(void *)
         tk.maxVel *= te.speed;
         const bool tooFast = g_tireDamage && speedOk && tk.maxDamage > 0 && tk.minVel > 0.0001f && speed > tk.minVel;
         g_view.warn = tooFast ? 1 : 0;
-        if (tooFast)
+        // how worn the most worn tire is (for the warning and for the state published for other mods), and whether a
+        // tire of the truck is worn out
+        int wear = -1;
+        bool anyWorn = false;
+        for (const WheelRef &w : wheels)
         {
-            // for the warning: how worn the most worn tire is
-            int wear = -1;
-            for (const WheelRef &w : wheels)
-            {
-                int damage = 0, capacity = 0;
-                if (WheelDamage(vehicle, w, damage, capacity) && capacity > 0) wear = max(wear, damage * 100 / capacity);
-            }
-            g_view.wear = wear;
+            int damage = 0, capacity = 0;
+            BYTE broken = 0;
+            if (WheelDamage(vehicle, w, damage, capacity) && capacity > 0) wear = max(wear, damage * 100 / capacity);
+            if (Read(w.model + 0x328, broken) && broken) anyWorn = true;
         }
+        g_view.wear = wear;
         if (tooFast) slowFor = 0.0f;
         else if ((slowFor += dt) > 1.0f) tickTimer = 0.0f;
         // The game's truck update comes through ForegroundHook every frame while a truck is driven: the damage is
@@ -1982,6 +1987,21 @@ static DWORD WINAPI Run(void *)
             AcquireSRWLockExclusive(&g_setLock);
             g_live = live;
             ReleaseSRWLockExclusive(&g_setLock);
+        }
+        // the mod's state for other mods (tire_state.h): a gauge cluster shows the pressure level from it
+        {
+            TireState st = {};
+            st.vehicle = wheels.empty() ? 0 : vehicle;
+            st.mode = g_mode;
+            st.modes = g_modeCount;
+            st.pressure = g_pressure;
+            st.pressureAir = pressureAir;
+            st.target = kModePressure[g_mode];
+            st.outsideC = g_outsideC;
+            st.wear = wear;
+            st.flags = (wheels.empty() ? 0u : kTireVehicle) | (moving ? kTireChanging : 0u) | (held ? kTireHeld : 0u) | (tooFast ? kTireTooFast : 0u) |
+                       (anyWorn ? kTireWorn : 0u) | (g_hardMode ? kTireHardMode : 0u) | (g_outsideFromMod ? kTireOutsideFromMod : 0u);
+            TireStateWrite(g_state, st);
         }
         // the records of long gone wheels go; those of the wheels in use stay (dropping them would make the next pass
         // take a flattened wheel for one it must leave alone, or its scaled frictions for the tire's own)
@@ -2227,6 +2247,48 @@ static bool RealismTest()
     g_pressure = kModePressure[kNormal];
     g_now = FactorsAt(g_pressure);
     return at && between && below && above && modes && temps && hard;
+}
+
+// The state published for other mods (tire_state.h): the block is made, written, opened by its name as another mod
+// would and read back by its offsets with the same numbers; the sequence is even after a write, the tick is of now.
+static bool TireStateTest()
+{
+    TireStateWriter w;
+    const bool made = TireStateOpen(w);
+    TireState v = {};
+    v.vehicle = 0x1234;
+    v.mode = kLow;
+    v.modes = 4;
+    v.pressure = 0.55f;
+    v.pressureAir = 0.5f;
+    v.target = kModePressure[kLow];
+    v.outsideC = -12.5f;
+    v.flags = kTireVehicle | kTireChanging | kTireOutsideFromMod;
+    v.wear = 37;
+    if (made) TireStateWrite(w, v);
+    wchar_t name[64];
+    swprintf(name, 64, L"Local\\SnowRunnerTirePressure.State.%lu", GetCurrentProcessId());
+    const HANDLE mapping = made ? OpenFileMappingW(FILE_MAP_READ, FALSE, name) : nullptr;
+    const volatile TireState *block = mapping ? (const volatile TireState *)MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(TireState)) : nullptr;
+    TireState r = {};
+    const bool copied = block && TireStateCopy(block, r);
+    const bool same = copied && r.magic == kTireMagic && r.version == 1 && r.size == 64 && (r.sequence & 1) == 0 && r.vehicle == 0x1234 && r.mode == kLow && r.modes == 4 &&
+                      r.pressure == 0.55f && r.pressureAir == 0.5f && r.target == kModePressure[kLow] && r.outsideC == -12.5f && r.flags == v.flags && r.wear == 37 &&
+                      GetTickCount64() - r.tick < 2000;
+    uint32_t atOffsets[3] = {};
+    if (copied)
+    {
+        memcpy(&atOffsets[0], (const uint8_t *)&r + 32, 4);  // mode
+        memcpy(&atOffsets[1], (const uint8_t *)&r + 56, 4);  // flags
+        memcpy(&atOffsets[2], (const uint8_t *)&r + 60, 4);  // wear
+    }
+    const bool offsets = copied && atOffsets[0] == (uint32_t)kLow && atOffsets[1] == v.flags && atOffsets[2] == 37u;
+    if (block) UnmapViewOfFile((const void *)block);
+    if (mapping) CloseHandle(mapping);
+    TireStateClose(w);
+    printf("%s state for other mods: the block made, written and read back by its name (mode %d, pressure %.2f, %.1f C, flags %u, wear %d at their offsets)\n",
+           made && same && offsets ? "ok  " : "FAIL", r.mode, r.pressure, r.outsideC, r.flags, r.wear);
+    return made && same && offsets;
 }
 
 // An exe from a file, as the loader lays it out: a copy of the image from a running game is that already (file offset
@@ -2626,6 +2688,7 @@ int wmain(int argc, wchar_t **argv)
     if (!IniTest(argc > 1 ? argv[1] : nullptr)) return 1;
     if (!FlattenTest()) return 1;
     if (!RealismTest()) return 1;
+    if (!TireStateTest()) return 1;
     if (!SoundTest()) return 1;
     wchar_t imageFile[1024] = {};
     GetEnvironmentVariableW(L"SR_IMAGE", imageFile, 1024);
