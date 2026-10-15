@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.2.0]
+## [1.2.0] 2026-10-15
 
 - Pressure changes only while the truck stands still, `StandStill`, on by default: a choice made while driving waits, a change under way pauses, and a hint at the top left says so.
 - The tires feel the outside temperature, `Temperature`, on by default. The air in them follows the gas law (Normal taken as 35 psi: 83% of its pressure at 20 below, 110% at 35 above), so cold tires run softer, flatter and with more grip on soft ground; cold rubber grips less, most on asphalt and rock; in the heat soft tires wear from lower speeds. `AmbientC` sets the temperature (15 C); a gauge mod by the same author hands it over by map and hour while it runs. The tab shows the temperature in force and the pressure the tires hold.
